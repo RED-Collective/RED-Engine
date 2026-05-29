@@ -96,24 +96,11 @@ if ($LASTEXITCODE -ne 0) {
     Exit
 }
 
-$ConfigPort = "8080"
-if (Test-Path "config.json") {
-    $ConfigRaw = Get-Content "config.json" -Raw | ConvertFrom-Json -ErrorAction SilentlyContinue
-    if ($ConfigRaw -and $ConfigRaw.addr -match ':(\d+)') {
-        $ConfigPort = $Matches[1]
-    }
-}
-
+# ✅ Hardcoded to localhost since Caddy reverse-proxies standard traffic on port 80
 $HostIP = "localhost"
-$IPAddresses = [System.Net.Dns]::GetHostAddresses((System.Net.Dns]::GetHostName())) | 
-    Where-Object { $_.AddressFamily -eq 'InterNetwork' -and $_.IPAddressToString -notlike '127.*' }
-if ($IPAddresses) {
-    $HostIP = $IPAddresses[0].IPAddressToString
-}
 
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "✅ Installation Complete!" -ForegroundColor Green
-Write-Host "🌐 Your node is running at: http://${HostIP}:${ConfigPort}"
-Write-Host "⚙️  Admin Panel: http://${HostIP}:${ConfigPort}/-/admin"
+Write-Host "🌐 Your node is running at: http://${HostIP}"
+Write-Host "⚙️  Admin Panel: http://${HostIP}/-/admin"
 Write-Host "========================================" -ForegroundColor Cyan
-
