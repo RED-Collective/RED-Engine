@@ -7,9 +7,11 @@ services:
     image: red-engine-image
     container_name: red_engine_node
     restart: unless-stopped
-    userns_mode: keep-id
+    userns_mode: keep-id # KEPT: Crucial for your Podman rootless volume permissions
     networks:
       - clearnet-tier
+    expose:
+      - "8080" # ADDED: Explicitly tells the internal Docker network this port is active
     volumes:
       - ./data:/app/data:rw
       - ./config.json:/app/config.json:rw
@@ -20,8 +22,10 @@ services:
     container_name: caddy_proxy
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      # MODIFIED: Removed port 443 completely. 
+      # Bound port 80 strictly to localhost (127.0.0.1) so no one on your Wi-Fi can access it.
+      # This will access the site locally at http://localhost:8080
+      - "127.0.0.1:8080:80" 
     networks:
       - clearnet-tier
     volumes:
@@ -35,6 +39,9 @@ services:
       if [ ! -f /etc/caddy/Caddyfile ]; then
         echo "Generating default Caddyfile..."
         echo ":80 {" > /etc/caddy/Caddyfile
+        echo "    header X-Content-Type-Options nosniff" >> /etc/caddy/Caddyfile
+        echo "    header X-Frame-Options DENY" >> /etc/caddy/Caddyfile
+        echo "    header X-XSS-Protection \"1; mode=block\"" >> /etc/caddy/Caddyfile
         echo "    reverse_proxy red_engine:8080" >> /etc/caddy/Caddyfile
         echo "}" >> /etc/caddy/Caddyfile
       fi;

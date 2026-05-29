@@ -67,6 +67,10 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 
 		if art != nil {
 			d.Title = capitalize(parts[len(parts)-1])
+
+			// MERGED FROM PROJECT-RED: Remove .md from the UI title
+			d.Title = strings.TrimSuffix(d.Title, ".md")
+
 			d.Crumb = buildCrumbs(parts)
 			d.Body = art.Body
 			d.Verified = art.Verified
@@ -74,7 +78,7 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 			d.Hash = art.Hash
 			d.VerificationError = art.VerificationError
 		} else {
-			// NEW: If it's not an article, check if it's a Sub-Directory!
+			// If it's not an article, check if it's a Sub-Directory
 			sec := h.store.GetSection(path)
 			if sec != nil {
 				d.Title = capitalize(parts[len(parts)-1])

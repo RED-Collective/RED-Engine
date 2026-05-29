@@ -1,3 +1,22 @@
-:80 {
-    reverse_proxy red_engine:8080
+http://localhost:8080, :80 {
+    # Core security headers retained from red-engine
+    header {
+        X-Content-Type-Options nosniff
+        X-Frame-Options DENY
+        X-XSS-Protection "1; mode=block"
+        Referrer-Policy no-referrer
+        Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
+    }
+
+    # Optional: Basic rate limiting (if you are testing webhook floods locally)
+    # rate_limit {
+    #     zone local_limit {
+    #         key {remote_ip}
+    #         window 1s
+    #         events 10
+    #     }
+    # }
+
+    # Forward all traffic (including Tailwind assets embedded in Go) to the backend
+    reverse_proxy red-engine:8080
 }

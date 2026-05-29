@@ -1,296 +1,128 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>RED Engine Admin</title>
-        <style>
-            body {
-                font-family: system-ui, sans-serif;
-                background: #1a1a1a;
-                color: #fff;
-                display: flex;
-                justify-content: center;
-                padding-top: 5vh;
-                padding-bottom: 5vh;
-                margin: 0;
-            }
-            .card {
-                background: #2a2a2a;
-                padding: 2rem;
-                border-radius: 8px;
-                width: 100%;
-                max-width: 500px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            }
-            h1,
-            h2 {
-                margin-top: 0;
-                color: #ff4757;
-            }
-            h2 {
-                font-size: 1.2rem;
-                margin-top: 2rem;
-                border-bottom: 1px solid #444;
-                padding-bottom: 0.5rem;
-            }
-            label {
-                display: block;
-                margin: 1rem 0 0.5rem;
-                font-size: 0.9rem;
-                color: #aaa;
-            }
 
-            /* Password Input Wrapper */
-            .input-group {
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-            }
-            input[type="text"],
-            input[type="password"] {
-                flex-grow: 1;
-                padding: 0.75rem;
-                border: 1px solid #444;
-                border-radius: 4px;
-                background: #111;
-                color: white;
-                box-sizing: border-box;
-            }
-            .toggle-btn {
-                background: #444;
-                color: white;
-                border: none;
-                padding: 0.75rem 1rem;
-                border-radius: 4px;
-                cursor: pointer;
-            }
-            .toggle-btn:hover {
-                background: #555;
-            }
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RED Engine Admin</title>
+  <link rel="stylesheet" href="/static/render.css">
+</head>
 
-            .checkbox-group {
-                display: flex;
-                align-items: center;
-                gap: 0.5rem;
-                margin-top: 1rem;
-            }
-            button.primary {
-                margin-top: 1.5rem;
-                width: 100%;
-                padding: 0.75rem;
-                background: #ff4757;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                cursor: pointer;
-                transition: background 0.2s;
-            }
-            button.primary:hover {
-                background: #ff6b81;
-            }
+<body>
+  <div class="card">
+    <h1>Node Administration</h1>
 
-            #status,
-            #login-status {
-                margin-top: 1rem;
-                font-size: 0.9rem;
-                text-align: center;
-            }
-            .success {
-                color: #2ed573;
-            }
-            .error {
-                color: #ff4757;
-            }
+    <div id="login-view">
+      <label>Admin Token</label>
+      <div class="input-group">
+        <input type="password" id="token" placeholder="Enter secure token" required />
+        <button type="button" class="toggle-btn" id="togglePasswordBtn" onclick="toggleVisibility()">
+          Show
+        </button>
+      </div>
+      <button class="primary" onclick="login()">
+        Access Dashboard
+      </button>
+      <div id="login-status"></div>
+    </div>
 
-            /* Listing elements */
-            ul {
-                list-style: none;
-                padding: 0;
-                margin: 0;
-            }
-            li {
-                background: #111;
-                border: 1px solid #444;
-                padding: 1rem;
-                margin-bottom: 0.5rem;
-                border-radius: 4px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                word-break: break-all;
-                gap: 1rem;
-            }
-            .sync-info {
-                display: flex;
-                flex-direction: column;
-                font-size: 0.85rem;
-                color: #aaa;
-            }
-            .sync-info strong {
-                color: #fff;
-                font-size: 1rem;
-                margin-bottom: 0.2rem;
-            }
-            .btn-delete {
-                background: #ff4757;
-                color: white;
-                border: none;
-                padding: 0.4rem 0.8rem;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 0.8rem;
-                min-width: 70px;
-            }
-            .btn-delete:hover {
-                background: #ff6b81;
-            }
-
-            /* View Gating */
-            #dashboard-view {
-                display: none;
-            }
-        </style>
-    </head>
-    <body>
-        <div class="card">
-            <h1>Node Administration</h1>
-
-            <div id="login-view">
-                <label>Admin Token</label>
-                <div class="input-group">
-                    <input
-                        type="password"
-                        id="token"
-                        placeholder="Enter secure token"
-                        required
-                    />
-                    <button
-                        type="button"
-                        class="toggle-btn"
-                        id="togglePasswordBtn"
-                        onclick="toggleVisibility()"
-                    >
-                        Show
-                    </button>
-                </div>
-                <button class="primary" onclick="login()">
-                    Access Dashboard
-                </button>
-                <div id="login-status"></div>
-            </div>
-
-            <div id="dashboard-view">
-                <p
-                    style="
+    <div id="dashboard-view">
+      <p style="
                         color: #2ed573;
                         font-weight: bold;
                         text-align: center;
-                    "
-                >
-                    ✓ Authenticated
-                </p>
+                    ">
+        ✓ Authenticated
+      </p>
 
-                <h2>Add Remote Base or Guide</h2>
-                <label>Remote File or Archive URL</label>
-                <input
-                    type="text"
-                    id="url"
-                    placeholder="https://example.com/kb.tar.gz or raw file URL"
-                    required
-                />
+      <h2>Add Remote Base or Guide</h2>
+      <label>Remote File or Archive URL</label>
+      <input type="text" id="url" placeholder="https://example.com/kb.tar.gz or raw file URL" required />
 
-                <label>Target Directory Name (Optional)</label>
-                <input
-                    type="text"
-                    id="filename"
-                    placeholder="Leave blank to auto-detect from URL"
-                />
+      <label>Target Directory Name (Optional)</label>
+      <input type="text" id="filename" placeholder="Leave blank to auto-detect from URL" />
 
-                <div class="checkbox-group">
-                    <input type="checkbox" id="saveState" checked />
-                    <label style="margin: 0"
-                        >Save to config.json (Startup Sync)</label
-                    >
-                </div>
+      <div class="checkbox-group">
+        <input type="checkbox" id="saveState" checked />
+        <label style="margin: 0">Save to config.json (Startup Sync)</label>
+      </div>
 
-                <button class="primary" onclick="syncGuide()">
-                    Import & Sync
-                </button>
-                <div id="status"></div>
+      <button class="primary" onclick="syncGuide()">
+        Import & Sync
+      </button>
+      <div id="status"></div>
 
-                <h2>Currently Synced Sync Targets</h2>
-                <ul id="sync-list"></ul>
-            </div>
-        </div>
+      <h2>Currently Synced Sync Targets</h2>
+      <ul id="sync-list"></ul>
+    </div>
+  </div>
 
-        <script>
-            let sessionToken = "";
+  <script>
+    let sessionToken = "";
 
-            // Toggle Password Visibility
-            function toggleVisibility() {
-                const input = document.getElementById("token");
-                const btn = document.getElementById("togglePasswordBtn");
-                if (input.type === "password") {
-                    input.type = "text";
-                    btn.textContent = "Hide";
-                } else {
-                    input.type = "password";
-                    btn.textContent = "Show";
-                }
-            }
+    // Toggle Password Visibility
+    function toggleVisibility() {
+      const input = document.getElementById("token");
+      const btn = document.getElementById("togglePasswordBtn");
+      if (input.type === "password") {
+        input.type = "text";
+        btn.textContent = "Hide";
+      } else {
+        input.type = "password";
+        btn.textContent = "Show";
+      }
+    }
 
-            // Authenticate and swap views safely
-            async function login() {
-                const tokenInput = document.getElementById("token").value;
-                const status = document.getElementById("login-status");
+    // Authenticate and swap views safely
+    async function login() {
+      const tokenInput = document.getElementById("token").value;
+      const status = document.getElementById("login-status");
 
-                status.textContent = "Verifying with Node...";
-                status.className = "";
+      status.textContent = "Verifying with Node...";
+      status.className = "";
 
-                try {
-                    const response = await fetch("/-/admin/config", {
-                        headers: { "X-Admin-Token": tokenInput },
-                    });
+      try {
+        const response = await fetch("/-/admin/config", {
+          headers: { "X-Admin-Token": tokenInput },
+        });
 
-                    if (response.ok) {
-                        sessionToken = tokenInput;
-                        document.getElementById("login-view").style.display =
-                            "none";
-                        document.getElementById(
-                            "dashboard-view",
-                        ).style.display = "block";
+        if (response.ok) {
+          sessionToken = tokenInput;
+          document.getElementById("login-view").style.display =
+            "none";
+          document.getElementById(
+            "dashboard-view",
+          ).style.display = "block";
 
-                        const data = await response.json();
-                        renderList(data);
-                    } else {
-                        status.textContent = "Error: Invalid Admin Token!";
-                        status.className = "error";
-                    }
-                } catch (err) {
-                    status.textContent =
-                        "Server communication failure. Check terminal logs.";
-                    status.className = "error";
-                }
-            }
+          const data = await response.json();
+          renderList(data);
+        } else {
+          status.textContent = "Error: Invalid Admin Token!";
+          status.className = "error";
+        }
+      } catch (err) {
+        status.textContent =
+          "Server communication failure. Check terminal logs.";
+        status.className = "error";
+      }
+    }
 
-            // Render active tracking lists
-            function renderList(syncArray) {
-                const list = document.getElementById("sync-list");
-                list.innerHTML = "";
+    // Render active tracking lists
+    function renderList(syncArray) {
+      const list = document.getElementById("sync-list");
+      list.innerHTML = "";
 
-                if (!syncArray || syncArray.length === 0) {
-                    list.innerHTML =
-                        '<li style="justify-content: center; color: #888;">No startup sync hooks configured.</li>';
-                    return;
-                }
+      if (!syncArray || syncArray.length === 0) {
+        list.innerHTML =
+          '<li style="justify-content: center; color: #888;">No startup sync hooks configured.</li>';
+        return;
+      }
 
-                syncArray.forEach((item) => {
-                    const li = document.createElement("li");
-                    // We escape the filename to handle nested directory slashes safely in JS arguments
-                    const escapedFilename = btoa(item.filename);
-                    li.innerHTML = `
+      syncArray.forEach((item) => {
+        const li = document.createElement("li");
+        // We escape the filename to handle nested directory slashes safely in JS arguments
+        const escapedFilename = btoa(item.filename);
+        li.innerHTML = `
                         <div class="sync-info">
                             <strong>${item.filename}</strong>
                             <span>${item.url}</span>
@@ -300,101 +132,102 @@
                         </div>
                         <button class="btn-delete" onclick="removeGuide('${item.filename}', '${escapedFilename}')">Remove</button>
                     `;
-                    list.appendChild(li);
-                });
-            }
-            // Fire archive imports
-            async function syncGuide() {
-                const status = document.getElementById("status");
-                const payload = {
-                    url: document.getElementById("url").value,
-                    filename: document.getElementById("filename").value,
-                    saveToStartup: document.getElementById("saveState").checked,
-                };
+        list.appendChild(li);
+      });
+    }
+    // Fire archive imports
+    async function syncGuide() {
+      const status = document.getElementById("status");
+      const payload = {
+        url: document.getElementById("url").value,
+        filename: document.getElementById("filename").value,
+        saveToStartup: document.getElementById("saveState").checked,
+      };
 
-                status.textContent = "Syncing...";
-                status.className = "";
+      status.textContent = "Syncing...";
+      status.className = "";
 
-                try {
-                    const response = await fetch("/-/import", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "X-Admin-Token": sessionToken,
-                        },
-                        body: JSON.stringify(payload),
-                    });
+      try {
+        const response = await fetch("/-/import", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Admin-Token": sessionToken,
+          },
+          body: JSON.stringify(payload),
+        });
 
-                    const text = await response.text();
-                    if (response.ok) {
-                        status.textContent = text;
-                        status.className = "success";
-                        document.getElementById("url").value = "";
-                        document.getElementById("filename").value = "";
-                        refreshList();
-                    } else {
-                        status.textContent = "Error: " + text;
-                        status.className = "error";
-                    }
-                } catch (err) {
-                    status.textContent = "Network error syncing target.";
-                    status.className = "error";
-                }
-            }
+        const text = await response.text();
+        if (response.ok) {
+          status.textContent = text;
+          status.className = "success";
+          document.getElementById("url").value = "";
+          document.getElementById("filename").value = "";
+          refreshList();
+        } else {
+          status.textContent = "Error: " + text;
+          status.className = "error";
+        }
+      } catch (err) {
+        status.textContent = "Network error syncing target.";
+        status.className = "error";
+      }
+    }
 
-            // Drop remote data scopes dynamically
-            async function removeGuide(filename, escapedFilename) {
-                const deleteCheckbox = document.getElementById(
-                    `delete-files-${escapedFilename}`,
-                );
-                const deleteLocal = deleteCheckbox
-                    ? deleteCheckbox.checked
-                    : false;
+    // Drop remote data scopes dynamically
+    async function removeGuide(filename, escapedFilename) {
+      const deleteCheckbox = document.getElementById(
+        `delete-files-${escapedFilename}`,
+      );
+      const deleteLocal = deleteCheckbox
+        ? deleteCheckbox.checked
+        : false;
 
-                let msg = `Are you sure you want to stop tracking "${filename}"?`;
-                if (deleteLocal) {
-                    msg +=
-                        " This will permanently delete its files from system storage!";
-                }
+      let msg = `Are you sure you want to stop tracking "${filename}"?`;
+      if (deleteLocal) {
+        msg +=
+          " This will permanently delete its files from system storage!";
+      }
 
-                if (!confirm(msg)) return;
+      if (!confirm(msg)) return;
 
-                try {
-                    const response = await fetch("/-/admin/remove", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            "X-Admin-Token": sessionToken,
-                        },
-                        body: JSON.stringify({
-                            filename: filename,
-                            deleteLocalFiles: deleteLocal, // <-- PASSES STATE TO BACKEND
-                        }),
-                    });
+      try {
+        const response = await fetch("/-/admin/remove", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Admin-Token": sessionToken,
+          },
+          body: JSON.stringify({
+            filename: filename,
+            deleteLocalFiles: deleteLocal, // <-- PASSES STATE TO BACKEND
+          }),
+        });
 
-                    if (response.ok) {
-                        refreshList();
-                    } else {
-                        alert(
-                            "Prune operation failed: " +
-                                (await response.text()),
-                        );
-                    }
-                } catch (err) {
-                    alert("Network communication fault.");
-                }
-            }
+        if (response.ok) {
+          refreshList();
+        } else {
+          alert(
+            "Prune operation failed: " +
+            (await response.text()),
+          );
+        }
+      } catch (err) {
+        alert("Network communication fault.");
+      }
+    }
 
-            // Silent status sync background refreshes
-            async function refreshList() {
-                const response = await fetch("/-/admin/config", {
-                    headers: { "X-Admin-Token": sessionToken },
-                });
-                if (response.ok) {
-                    const data = await response.json();
-                    renderList(data);
-                }
-            }
-        </script>
-    </body>
+    // Silent status sync background refreshes
+    async function refreshList() {
+      const response = await fetch("/-/admin/config", {
+        headers: { "X-Admin-Token": sessionToken },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        renderList(data);
+      }
+    }
+  </script>
+</body>
+
 </html>

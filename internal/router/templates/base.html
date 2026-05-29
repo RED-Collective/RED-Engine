@@ -1,176 +1,157 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>{{ .Site }} - {{ .Title }}</title>
-        <link rel="stylesheet" href="/static/reset.css" />
-        <link rel="stylesheet" href="/static/layout.css" />
-        <link rel="stylesheet" href="/static/nav.css" />
-        <link rel="stylesheet" href="/static/article.css" />
-    </head>
-    <body>
-        <div id="wrap">
-<nav id="sidebar">
-                <div class="search-container" style="padding: 1rem; border-bottom: 1px solid #333;">
-                    <input 
-                        type="text" 
-                        id="search-input" 
-                        placeholder="🔍 Search articles..." 
-                        style="width: 100%; padding: 0.6rem; border: 1px solid #444; border-radius: 4px; background: #111; color: white; box-sizing: border-box; font-size: 0.9rem;"
-                        oninput="filterArticles()"
-                    />
-                </div>
 
-                <div id="sidebar-links">
-                    {{ range $topName, $section := .Nav }}
-                    <div class="nav-heading-group">
-                        <div class="nav-heading">{{ $section.Name }}</div>
-                        <div class="nav-group">
-                            {{ range $art := $section.Articles }}
-                            <a href="{{ $art.Path }}" class="nav-item">{{ $art.Title }}</a>
-                            {{ end }} 
-                            
-                            {{ range $subName, $subSection := $section.Sub }}
-                            <div class="nav-sub-heading">{{ $subSection.Name }}</div>
-                            {{ range $art := $subSection.Articles }}
-                            <a href="{{ $art.Path }}" class="nav-item sub-item">{{ $art.Title }}</a>
-                            {{ end }} 
-                            {{ end }}
-                        </div>
-                    </div>
-                    {{ end }}
-                </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="/static/render.css">
 
-                <div id="search-results" style="display: none; padding: 0 1rem;">
-                    <div style="font-size: 0.8rem; color: #888; text-transform: uppercase; margin: 1rem 0 0.5rem; letter-spacing: 0.05em;">Search Results</div>
-                    <div id="search-results-items" style="display: flex; flex-direction: column; gap: 0.25rem;"></div>
-                </div>
-            </nav>
+  <title>{{ .Site }} - {{ .Title }}</title>
+  <!-- Optional: add a favicon or additional meta tags -->
+</head>
 
-            <main id="main">
-                {{ if .Crumb }}
-                <div class="breadcrumb">
-                    <a href="/">Home</a>
-                    {{ range $i, $c := .Crumb }}
-                    <span class="sep">
-                        <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            fill="none"
-                            stroke="currentColor"
-                            stroke-width="2"
-                        >
-                            <polyline points="9 18 15 12 9 6"></polyline>
-                        </svg>
-                    </span>
-                    <a href="{{ $c.Path }}">{{ $c.Label }}</a>
-                    {{ end }}
-                </div>
-                {{ end }}
-                
+<body class="dark:bg-neutral-900 dark:text-neutral-100 min-h-screen text-neutral-950 mb-0">
+  <div id="wrap mb-0">
+    <div id="sidebar"
+      class="fixed bg-red-300 dark:bg-neutral-950 border-r-4 border-red-950 top-0 left-0 z-40 w-48 h-full transition-all duration-200 ease-in-out">
+      <button id="sidebar-button" class="absolute top-2 right-2 transition-all duration-400 ease-in-out"
+        onclick="toggleRedSidebar()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="2.5em" height="2.5em" viewBox="0 0 24 24">
+          <path d="M0 0h24v24H0z" fill="none" />
+          <path fill="currentColor"
+            d="M18 3a3 3 0 0 1 2.995 2.824L21 6v12a3 3 0 0 1-2.824 2.995L18 21H6a3 3 0 0 1-2.995-2.824L3 18V6a3 3 0 0 1 2.824-2.995L6 3zm0 2H9v14h9a1 1 0 0 0 .993-.883L19 18V6a1 1 0 0 0-.883-.993zm-2.293 4.293a1 1 0 0 1 .083 1.32l-.083.094L14.415 12l1.292 1.293a1 1 0 0 1 .083 1.32l-.083.094a1 1 0 0 1-1.32.083l-.094-.083l-2-2a1 1 0 0 1-.083-1.32l.083-.094l2-2a1 1 0 0 1 1.414 0" />
+        </svg>
+      </button>
+      <div class="mt-8"></div>
+      <!-- ^ extra space div and I'm lazy -->
+      {{ range $topName, $section := .Nav }}
+      <div class="nav-heading m-2 sidebar-text">{{ $section.Name }}</div>
+      <div class="nav-group flex-row gap-2 ml-4 sidebar-text">
+        {{ range $art := $section.Articles }}
+        <a href="{{ $art.Path }}" class="nav-item">{{ $art.Title }}</a>
+        {{ end }} {{ range $subName, $subSection := $section.Sub }}
+        <div class="nav-sub-heading">{{ $subSection.Name }}</div>
+        {{ range $art := $subSection.Articles }}
+        <a href="{{ $art.Path }}" class="nav-item sub-item">{{ $art.Title }}</a>
+        {{ end }} {{ end }}
+      </div>
+      {{ end }}
+    </div>
 
-<div class="security-header" style="margin-bottom: 1.5rem;">
-    {{ if .Verified }}
-        <div class="badge verified" style="background: #2ed573; color: white; padding: 0.5rem 0.75rem; border-radius: 4px; display: inline-block; font-weight: bold;">
-            ✅ Verified Contributor: {{ .Author }}
+    <!-- Make the same margin for the left the size of the sidebar, (see the w-32, or whatever it is rn) -->
+    <main id="main_content" class="ml-48 mb-0 min-h-screen flex flex-col transition-all duration-200 ease-in-out">
+      {{ if .Crumb }}
+      <div class="breadcrumb flex flex-row gap-2 align-middle justify-left mx-8 mt-4">
+        <a class="underline font-light my-auto" href="/">Home</a>
+        {{ range $i, $c := .Crumb }}
+        <span class="sep pt-1">
+          <svg class="m-auto" xmlns="http://www.w3.org/2000/svg" width="2em" height="2em" viewBox="0 0 24 24">
+            <path d="M0 0h24v24H0z" fill="none" />
+            <g fill="none" fill-rule="evenodd">
+              <path
+                d="M24 0v24H0V0zM12.593 23.258l-.011.002l-.071.035l-.02.004l-.014-.004l-.071-.035q-.016-.005-.024.005l-.004.01l-.017.428l.005.02l.01.013l.104.074l.015.004l.012-.004l.104-.074l.012-.016l.004-.017l-.017-.427q-.004-.016-.017-.018m.265-.113l-.013.002l-.185.093l-.01.01l-.003.011l.018.43l.005.012l.008.007l.201.093q.019.005.029-.008l.004-.014l-.034-.614q-.005-.019-.02-.022m-.715.002a.02.02 0 0 0-.027.006l-.006.014l-.034.614q.001.018.017.024l.015-.002l.201-.093l.01-.008l.004-.011l.017-.43l-.003-.012l-.01-.01z" />
+              <path fill="currentColor"
+                d="M16.06 10.94a1.5 1.5 0 0 1 0 2.12l-5.656 5.658a1.5 1.5 0 1 1-2.121-2.122L12.879 12L8.283 7.404a1.5 1.5 0 0 1 2.12-2.122l5.658 5.657Z" />
+            </g>
+          </svg>
+        </span>
+        <a class="underline font-light my-auto" href="{{ $c.Path }}">{{ $c.Label }}</a>
+        {{ end }}
+      </div>
+      {{ end }}
+
+      <div class="flex flex-row gap-4 security-header m-8">
+        {{if .Verified}}
+        <div
+          class="flex flex-row gap-4 align-middle badge verified bg-emerald-200 px-6 p-3 rounded-xl text-black border-2 border-emerald-600">
+          <svg class="text-emerald-900" xmlns="http://www.w3.org/2000/svg" width="4em" height="4em" viewBox="0 0 24 24">
+            <path d="M0 0h24v24H0z" fill="none" />
+            <path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M20 4L9 15m12 4H3m6-4l-5-5" />
+          </svg>
+          <p class="text-emerald-950 justify-center m-auto"> Verified Contributor: <strong>{{ .Author }}</strong></p>
+
         </div>
-    {{ else }}
-        <div class="verification-failure-container hover-container" style="display: flex; flex-direction: column; gap: 0.5rem; background: #e7e3e3; border-left: 4px solid #ff4757; padding: 0.75rem 1rem; border-radius: 0 4px 4px 0; cursor: help; transition: all 0.2s ease;">
-            
-            <div class="badge unverified" style="color: #ff4757; font-weight: bold; font-size: 0.95rem;">
-                ⚠️ Unverified / Unknown Origin
-            </div>
-            
-            {{ if .VerificationError }}
-                <div class="reason-text" style="color: black; font-size: 0.85rem; font-family: monospace; background: #c4c0c0; padding: 0.4rem 0.6rem; border-radius: 4px; border: 1px solid #444; max-height: 0; opacity: 0; overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease, margin 0.2s ease;">
-                    {{ .VerificationError }}
-               </div>
-            {{ end }}
+        {{else}}
+        <div
+          class="flex flex-row gap-4 align-middle justify-center badge unverified bg-orange-100 border-2 border-orange-600 px-6 p-3 rounded-xl text-black">
+          <svg class="text-red-800 stroke-3" xmlns="http://www.w3.org/2000/svg" width="4em" height="4em"
+            viewBox="0 0 1024 1024">
+            <path d="M0 0h1024v1024H0z" fill="none" />
+            <path fill="currentColor"
+              d="M929 755.8L574.6 203.3a74 74 0 0 0-62.6-32.6a74 74 0 0 0-62.6 32.6L95 755.8a59 59 0 0 0 0 65a74 74 0 0 0 62.6 32.6h708.8c25.8 0 49.7-12.4 62.6-32.5s12.9-45 0-65M554.7 768h-85.4v-85.3h85.4zm0-426.7V640h-85.4V341.3z" />
+          </svg>
+          <p class="font-black justify-center m-auto text-red-950">
+            Unverified / Unknown Origin
+          </p>
         </div>
+        {{end}}
+      </div>
 
-        <style>
-            .hover-container:hover {
-                background: #dbd7d7 !important; 
-            }
-            .hover-container:hover .reason-text {
-                max-height: 100px !important; 
-                opacity: 1 !important;        
-                margin-top: 0.25rem;          
-            }
-        </style>
-    {{ end }}
-</div>
-
-                <div class="article-content">{{ .Body }}</div>
-
-                <div class="hash-footer">
-                    <span class="hash-label">🔐 SHA-256 Checksum:</span>
-                    <code class="hash-string" title="File integrity hash">{{ .Hash }}</code>
-                </div>
-            </main>
+      <!-- Article Content -->
+      <div class="mx-auto w-full px-4 sm:px-6 lg:px-8">
+        <div
+          class="prose prose-neutral dark:prose-invert max-w-none overflow-hidden rounded-xl border border-neutral-200 bg-white p-6 text-neutral-900 shadow-sm dark:border-neutral-800 dark:bg-neutral-800 dark:text-neutral-100">
+          {{ .Body }}
         </div>
-        <script>
-            let searchIndexCache = null;
+      </div>
 
-            async function loadSearchIndex() {
-                if (searchIndexCache) return searchIndexCache;
-                try {
-                    // FIX: Force the fetch API to bypass the browser's disk cache
-                    const response = await fetch('/-/search-index.json', { cache: 'no-store' });
-                    if (response.ok) {
-                        searchIndexCache = await response.json();
-                        return searchIndexCache;
-                    }
-                } catch (err) {
-                    console.error("Failed to populate search index", err);
-                }
-                return [];
-            }
 
-            async function filterArticles() {
-                const query = document.getElementById('search-input').value.toLowerCase().trim();
-                const normalLinks = document.getElementById('sidebar-links');
-                const searchView = document.getElementById('search-results');
-                const resultsContainer = document.getElementById('search-results-items');
+      <div class="hash-footer m-8 bg-neutral-300 dark:bg-neutral-700 rounded-md px-6 p-4">
+        <div class="m-auto flex flex-row gap-1">
+          <div class="flex flex-row gap-2 my-auto">
+            <svg xmlns="http://www.w3.org/2000/svg" width="2em" height="2em" viewBox="0 0 512 512">
+              <path d="M0 0h512v512H0z" fill="none" />
+              <path fill="#B1B4B5"
+                d="M376.749 349.097c-13.531 0-24.5-10.969-24.5-24.5V181.932c0-48.083-39.119-87.203-87.203-87.203c-48.083 0-87.203 39.119-87.203 87.203v82.977c0 13.531-10.969 24.5-24.5 24.5s-24.5-10.969-24.5-24.5v-82.977c0-75.103 61.1-136.203 136.203-136.203s136.203 61.1 136.203 136.203v142.665c0 13.531-10.969 24.5-24.5 24.5" />
+              <path fill="#FFB636"
+                d="M414.115 497.459H115.977c-27.835 0-50.4-22.565-50.4-50.4V274.691c0-27.835 22.565-50.4 50.4-50.4h298.138c27.835 0 50.4 22.565 50.4 50.4v172.367c0 27.836-22.565 50.401-50.4 50.401" />
+              <path fill="#FFD469"
+                d="M109.311 456.841h-2.525c-7.953 0-14.4-6.447-14.4-14.4V279.309c0-7.953 6.447-14.4 14.4-14.4h2.525c7.953 0 14.4 6.447 14.4 14.4v163.132c0 7.953-6.447 14.4-14.4 14.4" />
+            </svg>
+            <span class="hash-label my-auto">SHA-256 Checksum:</span>
+          </div>
+          {{if .Hash}}
+          <code class="hash-string my-auto" title="File integrity hash">{{ .Hash }}</code>
+          {{end}}
+        </div>
+      </div>
 
-                if (query === "") {
-                    searchView.style.display = "none";
-                    normalLinks.style.display = "block";
-                    return;
-                }
+      <!-- Footer -->
+      <div class="bg-red-400 h-auto dark:bg-red-900 dark:text-red-300 mt-auto">
+        <div class="p-4">
+          <p>This open source project was developed by people like you! If you are interested in contributing, please
+            consider <a class="text-red-100 underline" target="_blank"
+              href="https://github.com/RED-Collective/red-engine/blob/main/README.md">hosting
+              a node</a> or collaborating with us on <a target="_blank" class="text-red-100 underline"
+              href="https://github.com/RED-Collective/red-engine">GitHub.</a></p>
+        </div>
+      </div>
+    </main>
+  </div>
 
-                const index = await loadSearchIndex();
-                const matches = index.filter(item => 
-                    item.title.toLowerCase().includes(query) || 
-                    item.path.toLowerCase().includes(query)
-                );
+  <script>
+    // Make the sidebar collapsable
 
-                normalLinks.style.display = "none";
-                searchView.style.display = "block";
-                resultsContainer.innerHTML = "";
+    function toggleRedSidebar() {
+      const sidebar = document.getElementById("sidebar");
+      const text = document.querySelectorAll(".sidebar-text");
+      const sidebar_button = document.getElementById('sidebar-button')
+      const main_content = document.getElementById('main_content')
 
-                if (matches.length === 0) {
-                    resultsContainer.innerHTML = '<div style="color: #666; font-size: 0.9rem; padding: 0.5rem 0;">No matching pages found</div>';
-                    return;
-                }
+      sidebar.classList.toggle("w-48");
+      sidebar.classList.toggle("w-16");
 
-                matches.forEach(match => {
-                    const link = document.createElement('a');
-                    link.href = match.path;
-                    link.className = 'nav-item';
-                    link.style.display = 'block';
-                    link.textContent = match.title;
-                    resultsContainer.appendChild(link);
-                });
-            }
+      main_content.classList.toggle("ml-48")
+      main_content.classList.toggle("ml-16")  // Notice how this is the same number as the w-16 earlier - this is the bar width
 
-            document.getElementById('search-input').addEventListener('focus', loadSearchIndex);
-        </script>
+      sidebar_button.classList.toggle("rotate-180")
 
-        
-    </body>
-</html>
-    </body>
+      text.forEach((el) => {
+        el.classList.toggle("hidden");
+      });
+    }
+  </script>
+</body>
+
 </html>

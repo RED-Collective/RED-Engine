@@ -59,8 +59,10 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	if parsedURL.Host == "github.com" {
 		pathParts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
 		if len(pathParts) == 2 {
-			// If someone pasted a Repo home page. Auto-convert to a ZIP archive of the default branch.
-			req.URL = "https://github.com/" + pathParts[0] + "/" + pathParts[1] + "/archive/HEAD.zip"
+			// Auto-convert to a native .git clone URL instead of a ZIP archive
+			// to enable the new delta-pulling engine.
+			repoName := strings.TrimSuffix(pathParts[1], ".git")
+			req.URL = "https://github.com/" + pathParts[0] + "/" + repoName + ".git"
 			parsedURL, _ = url.Parse(req.URL) // Re-parse for downstream logic
 		} else if len(pathParts) > 2 && pathParts[2] == "blob" {
 			// If someone pasted a Web UI link to a specific file. Auto-convert to raw text.
@@ -84,6 +86,7 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 				lastPart = strings.TrimSuffix(lastPart, ".tar.gz")
 				lastPart = strings.TrimSuffix(lastPart, ".tgz")
 				lastPart = strings.TrimSuffix(lastPart, ".md")
+				lastPart = strings.TrimSuffix(lastPart, ".git")
 				if lastPart != "" {
 					targetSubPath = lastPart
 				}
@@ -172,10 +175,14 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		h.cfg.Mu.Lock()
 		var newSync []config.RemoteSync
 		for _, sync := range h.cfg.StartupSync {
-			if sync.Filename != req.Filename {
+			if sync.Filename != targetSubPath {
 				newSync = append(newSync, sync)
 			}
 		}
+		newSync = append(newSync, config.RemoteSync{
+			URL:      req.URL,
+			Filename: targetSubPath,
+		})
 		h.cfg.StartupSync = newSync
 		h.cfg.Mu.Unlock()
 
