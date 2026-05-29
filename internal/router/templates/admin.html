@@ -1,159 +1,313 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>RED Engine Admin</title>
         <style>
+            /* Modern CSS Variables Design System */
+            :root[data-theme="dark"] {
+                --bg-base: #0f0f11;
+                --bg-surface: #16161a;
+                --bg-input: #1d1d22;
+                --border-color: #2a2a32;
+                --text-main: #f3f4f6;
+                --text-muted: #9ca3af;
+                --accent-primary: #ff4757;
+                --accent-hover: #ff6b81;
+                --accent-alpha: rgba(255, 71, 87, 0.1);
+                --bg-card-item: #121215;
+                --shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+                --icon-sun: block;
+                --icon-moon: none;
+                --widget-btn-bg: var(--bg-surface);
+            }
+
+            :root[data-theme="light"] {
+                --bg-base: #f4f5f7;
+                --bg-surface: #ffffff;
+                --bg-input: #f8f9fa;
+                --border-color: #e5e7eb;
+                --text-main: #1f2937;
+                --text-muted: #6b7280;
+                --accent-primary: #cc2200; /* Deep Premium Blue */
+                --accent-hover: #931a02;
+                --accent-alpha: rgba(0, 102, 204, 0.08);
+                --bg-card-item: #f9fafb;
+                --shadow: 0 10px 30px rgba(31, 41, 55, 0.08);
+                --icon-sun: none;
+                --icon-moon: block;
+                --widget-btn-bg: #e6f2ff; /* Light blue accent background for widget */
+            }
+
             body {
-                font-family: system-ui, sans-serif;
-                background: #1a1a1a;
-                color: #fff;
+                font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+                background: var(--bg-base);
+                color: var(--text-main);
                 display: flex;
                 justify-content: center;
                 padding-top: 5vh;
                 padding-bottom: 5vh;
                 margin: 0;
-            }
-            .card {
-                background: #2a2a2a;
-                padding: 2rem;
-                border-radius: 8px;
-                width: 100%;
-                max-width: 500px;
-                box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
-            }
-            h1,
-            h2 {
-                margin-top: 0;
-                color: #ff4757;
-            }
-            h2 {
-                font-size: 1.2rem;
-                margin-top: 2rem;
-                border-bottom: 1px solid #444;
-                padding-bottom: 0.5rem;
-            }
-            label {
-                display: block;
-                margin: 1rem 0 0.5rem;
-                font-size: 0.9rem;
-                color: #aaa;
+                transition: background 0.3s ease, color 0.3s ease;
             }
 
-            /* Password Input Wrapper */
+            .card {
+                background: var(--bg-surface);
+                padding: 2.5rem;
+                border-radius: 12px;
+                width: 100%;
+                max-width: 500px;
+                box-shadow: var(--shadow);
+                border: 1px solid var(--border-color);
+                transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+            }
+
+            h1, h2 {
+                margin-top: 0;
+                color: var(--accent-primary);
+                font-weight: 700;
+                letter-spacing: -0.025em;
+                transition: color 0.3s ease;
+            }
+
+            h1 {
+                font-size: 1.75rem;
+                margin-bottom: 2rem;
+                text-align: center;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+            }
+
+            h2 {
+                font-size: 1.15rem;
+                margin-top: 2.5rem;
+                border-bottom: 2px solid var(--border-color);
+                padding-bottom: 0.6rem;
+            }
+
+            label {
+                display: block;
+                margin: 1.25rem 0 0.5rem;
+                font-size: 0.85rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                color: var(--text-muted);
+            }
+
             .input-group {
                 display: flex;
                 align-items: center;
                 gap: 0.5rem;
+                width: 100%;
             }
+
             input[type="text"],
             input[type="password"] {
                 flex-grow: 1;
-                padding: 0.75rem;
-                border: 1px solid #444;
-                border-radius: 4px;
-                background: #111;
-                color: white;
+                width: 100%;
+                padding: 0.85rem 1rem;
+                border: 1px solid var(--border-color);
+                border-radius: 6px;
+                background: var(--bg-input);
+                color: var(--text-main);
+                font-size: 0.95rem;
                 box-sizing: border-box;
+                outline: none;
+                transition: border-color 0.2s, background 0.3s, color 0.3s;
             }
-            .toggle-btn {
-                background: #444;
-                color: white;
-                border: none;
-                padding: 0.75rem 1rem;
-                border-radius: 4px;
-                cursor: pointer;
-            }
-            .toggle-btn:hover {
-                background: #555;
+
+            input[type="text"]:focus,
+            input[type="password"]:focus {
+                border-color: var(--accent-primary);
             }
 
             .checkbox-group {
                 display: flex;
                 align-items: center;
-                gap: 0.5rem;
-                margin-top: 1rem;
+                gap: 0.6rem;
+                margin-top: 1.25rem;
+                user-select: none;
             }
-            button.primary {
-                margin-top: 1.5rem;
-                width: 100%;
-                padding: 0.75rem;
-                background: #ff4757;
-                color: white;
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
+
+            .checkbox-group input[type="checkbox"] {
+                accent-color: var(--accent-primary);
+                width: 1rem;
+                height: 1rem;
                 cursor: pointer;
-                transition: background 0.2s;
             }
+
+            button.primary {
+                margin-top: 1.75rem;
+                width: 100%;
+                padding: 0.85rem;
+                background: var(--accent-primary);
+                color: #ffffff;
+                border: none;
+                border-radius: 6px;
+                font-weight: 700;
+                font-size: 1rem;
+                cursor: pointer;
+                transition: background 0.2s, transform 0.1s;
+            }
+
             button.primary:hover {
-                background: #ff6b81;
+                background: var(--accent-hover);
+            }
+
+            button.primary:active {
+                transform: scale(0.99);
             }
 
             #status,
             #login-status {
-                margin-top: 1rem;
+                margin-top: 1.25rem;
+                padding: 0.75rem;
+                border-radius: 6px;
                 font-size: 0.9rem;
+                font-weight: 600;
                 text-align: center;
             }
-            .success {
-                color: #2ed573;
-            }
-            .error {
-                color: #ff4757;
+            
+            #status:empty, #login-status:empty {
+                display: none;
             }
 
-            /* Listing elements */
+            .success {
+                background: rgba(46, 213, 115, 0.1);
+                color: #2ed573;
+                border: 1px solid rgba(46, 213, 115, 0.2);
+            }
+
+            .error {
+                background: rgba(255, 71, 87, 0.1);
+                color: #ff4757;
+                border: 1px solid rgba(255, 71, 87, 0.2);
+            }
+
             ul {
                 list-style: none;
                 padding: 0;
                 margin: 0;
             }
+
             li {
-                background: #111;
-                border: 1px solid #444;
-                padding: 1rem;
-                margin-bottom: 0.5rem;
-                border-radius: 4px;
+                background: var(--bg-card-item);
+                border: 1px solid var(--border-color);
+                padding: 1.25rem;
+                margin-bottom: 0.75rem;
+                border-radius: 8px;
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
                 word-break: break-all;
-                gap: 1rem;
+                gap: 1.5rem;
+                transition: background 0.3s, border-color 0.3s;
             }
+
             .sync-info {
                 display: flex;
                 flex-direction: column;
                 font-size: 0.85rem;
-                color: #aaa;
-            }
-            .sync-info strong {
-                color: #fff;
-                font-size: 1rem;
-                margin-bottom: 0.2rem;
-            }
-            .btn-delete {
-                background: #ff4757;
-                color: white;
-                border: none;
-                padding: 0.4rem 0.8rem;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 0.8rem;
-                min-width: 70px;
-            }
-            .btn-delete:hover {
-                background: #ff6b81;
+                color: var(--text-muted);
             }
 
-            /* View Gating */
+            .sync-info strong {
+                color: var(--text-main);
+                font-size: 1rem;
+                margin-bottom: 0.3rem;
+            }
+
+            .btn-delete {
+                background: var(--accent-alpha);
+                color: var(--accent-primary);
+                border: 1px solid rgba(255, 71, 87, 0.2);
+                padding: 0.5rem 1rem;
+                border-radius: 6px;
+                cursor: pointer;
+                font-weight: 700;
+                font-size: 0.8rem;
+                min-width: 80px;
+                transition: background 0.2s, color 0.2s, border-color 0.2s;
+            }
+
+            .btn-delete:hover {
+                background: var(--accent-primary);
+                color: #ffffff;
+                border-color: var(--accent-primary);
+            }
+
+            /* Theme Floating Controller Widget */
+            .theme-toggle-widget {
+                position: fixed;
+                bottom: 1.5rem;
+                right: 1.5rem;
+                background: var(--widget-btn-bg);
+                border: 1px solid var(--border-color);
+                box-shadow: var(--shadow);
+                width: 3.2rem;
+                height: 3.2rem;
+                border-radius: 50%;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: background 0.3s, border-color 0.3s, transform 0.2s;
+                z-index: 9999;
+                padding: 0;
+            }
+            
+            .theme-toggle-widget:hover {
+                transform: scale(1.1);
+            }
+
+            .theme-toggle-widget svg {
+                width: 1.4rem;
+                height: 1.4rem;
+                transition: fill 0.3s ease, stroke 0.3s ease;
+            }
+
+            .icon-sun {
+                display: var(--icon-sun);
+                stroke: #f1c40f;
+                fill: #f1c40f;
+            }
+
+            .icon-moon {
+                display: var(--icon-moon);
+                stroke: #0066cc;
+                fill: #0066cc;
+            }
+
             #dashboard-view {
                 display: none;
+            }
+
+            ::selection{
+                background-color: red;
+                color: white;
             }
         </style>
     </head>
     <body>
+        <button class="theme-toggle-widget" id="themeEngineTrigger" onclick="cycleThemeSystem()" aria-label="Toggle visual theme">
+            <svg class="icon-sun" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="5"></circle>
+                <line x1="12" y1="1" x2="12" y2="3"></line>
+                <line x1="12" y1="21" x2="12" y2="23"></line>
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+                <line x1="1" y1="12" x2="3" y2="12"></line>
+                <line x1="21" y1="12" x2="23" y2="12"></line>
+                <line x1="4.22" y1="19.22" x2="5.64" y2="17.78"></line>
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+            </svg>
+            <svg class="icon-moon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+            </svg>
+        </button>
+
         <div class="card">
             <h1>Node Administration</h1>
 
@@ -166,14 +320,6 @@
                         placeholder="Enter secure token"
                         required
                     />
-                    <button
-                        type="button"
-                        class="toggle-btn"
-                        id="togglePasswordBtn"
-                        onclick="toggleVisibility()"
-                    >
-                        Show
-                    </button>
                 </div>
                 <button class="primary" onclick="login()">
                     Access Dashboard
@@ -187,6 +333,7 @@
                         color: #2ed573;
                         font-weight: bold;
                         text-align: center;
+                        margin-bottom: 1.5rem;
                     "
                 >
                     ✓ Authenticated
@@ -226,18 +373,33 @@
         </div>
 
         <script>
+            // --- Theme Initialization Custom Isolation Module ---
+            (function initThemeEngine() {
+                const preservedTheme = localStorage.getItem('red-engine-theme');
+                if (preservedTheme) {
+                    document.documentElement.setAttribute('data-theme', preservedTheme);
+                } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
+                    document.documentElement.setAttribute('data-theme', 'light');
+                }
+            })();
+
+            function cycleThemeSystem() {
+                const currentTheme = document.documentElement.getAttribute('data-theme');
+                const targetTheme = currentTheme === 'light' ? 'dark' : 'light';
+                document.documentElement.setAttribute('data-theme', targetTheme);
+                localStorage.setItem('red-engine-theme', targetTheme);
+            }
+            // --- End Theme Module ---
+
             let sessionToken = "";
 
-            // Toggle Password Visibility
+            // Toggle Password Visibility (Maintained for layout compatibility but target buttons stripped)
             function toggleVisibility() {
                 const input = document.getElementById("token");
-                const btn = document.getElementById("togglePasswordBtn");
                 if (input.type === "password") {
                     input.type = "text";
-                    btn.textContent = "Hide";
                 } else {
                     input.type = "password";
-                    btn.textContent = "Show";
                 }
             }
 
@@ -294,7 +456,7 @@
                         <div class="sync-info">
                             <strong>${item.filename}</strong>
                             <span>${item.url}</span>
-                            <label style="margin-top:0.5rem; display:flex; align-items:center; gap:0.25rem; font-size:0.75rem; color:#aaa;">
+                            <label style="margin-top:0.5rem; display:flex; align-items:center; gap:0.25rem; font-size:0.75rem; color:var(--text-muted);">
                                 <input type="checkbox" id="delete-files-${escapedFilename}" checked> Delete local files on remove
                             </label>
                         </div>
