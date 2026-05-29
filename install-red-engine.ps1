@@ -24,21 +24,17 @@ if (-Not (Test-Path "docker-compose.yml")) {
     Write-Host "[*] Running from inside existing repository."
 }
 
-if (-Not (Test-Path ".\data")) {
+if (-if (-Not (Test-Path ".\data")) {
     Write-Host "[*] Creating .\data directory..."
     New-Item -ItemType Directory -Path ".\data" | Out-Null
 } else {
     Write-Host "[*] .\data directory already exists."
 }
 
-# Instead of giving Everyone full control, let container handle permissions
-# No special ACL needed if using Podman with --userns=keep-id
-Write-Host "[*] Creating ./data directory (container will manage permissions)" -ForegroundColor Cyan
-if (-Not (Test-Path ".\data")) {
-    New-Item -ItemType Directory -Path ".\data" | Out-Null
-} else {
-    Write-Host "[*] ./data directory already exists."
-}
+# On Windows with Podman, the container's 'reduser' (UID 1000) will map to your host user
+# if you run podman with `--userns=keep-id`. No explicit permissions needed.
+# The volume mount will work as long as the directory exists.
+Write-Host "[*] No special permissions set – relying on Podman user namespace mapping." -ForegroundColor Cyan
 
 if (-Not (Test-Path "config.json")) {
     Write-Host "[*] Generating default config.json..."

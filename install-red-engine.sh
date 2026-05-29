@@ -32,13 +32,17 @@ else
     echo "[*] Running from inside existing repository."
 fi
 
-# Ensure data directory is owned by UID 1000 (reduser inside container)
-if [ -d "./data" ]; then
-    sudo chown -R 1000:1000 ./data
-else
+if [ ! -d "./data" ]; then
+    echo "[*] Creating ./data directory..."
     mkdir -p ./data
-    chown 1000:1000 ./data
+else
+    echo "[*] ./data directory already exists."
 fi
+
+# FIX: Ensure the data directory is owned by UID 1000 (the 'reduser' inside the container)
+# This prevents permission errors without granting world-writable access.
+echo "[*] Setting ownership of ./data to UID 1000..."
+sudo chown -R 1000:1000 ./data
 
 if [ ! -f "config.json" ]; then
     echo "[*] Generating default config.json..."
