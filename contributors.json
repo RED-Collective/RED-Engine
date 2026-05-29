@@ -1,11 +1,10 @@
 [
   {
     "name": "StandardCodebase",
-    "public_key": "66f32e250b0bafb2683ae987e65a390901f030ccbc7745435d99f35da1bfccf1",
-    "contact-information": {
-      "github": "StandardCodebase",
-      "email": "dummy@yahoo.com",
-      "discord": "@standardcodebase"
-    }
+    "public_key": "66f32e250b0bafb2683ae987e65a390901f030ccbc7745435d99f35da1bfccf1"
+  },
+  {
+    "name": "New Writer",
+    "public_key": "2355bb6a5d6b7172295e2e9723afd889571ff11cf9729fa4e3932edb64b81243"
   }
 ]

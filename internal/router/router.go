@@ -57,7 +57,12 @@ func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
 
 	// The Admin UI
 	mux.HandleFunc("/-/admin", h.adminUI)
+	// Contributors management (admin only)
+	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
+	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributor))
+	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.deleteContributor))
 	// SECURE ROUTES: Wrapped in the adminOnly middleware
+
 	mux.HandleFunc("/-/reload", h.adminOnly(h.reload))
 	mux.HandleFunc("/-/import", h.adminOnly(h.importRemote))
 	mux.HandleFunc("/-/admin/config", h.adminOnly(h.adminConfig))

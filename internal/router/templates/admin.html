@@ -1,233 +1,309 @@
-<!doctype html>
+<!-- templates/admin.html -->
+<!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RED Engine Admin</title>
-  <link rel="stylesheet" href="/static/render.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RED Engine Admin</title>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
+<body class="admin-body">
 
-<body>
-  <div class="card">
-    <h1>Node Administration</h1>
+    <div class="admin-card">
+        <h1 class="admin-title">Node Administration</h1>
 
-    <div id="login-view">
-      <label>Admin Token</label>
-      <div class="input-group">
-        <input type="password" id="token" placeholder="Enter secure token" required />
-        <button type="button" class="toggle-btn" id="togglePasswordBtn" onclick="toggleVisibility()">
-          Show
-        </button>
-      </div>
-      <button class="primary" onclick="login()">
-        Access Dashboard
-      </button>
-      <div id="login-status"></div>
+        <!-- Login View -->
+        <div id="login-view">
+            <label class="admin-label">Admin Token</label>
+            <div class="input-group">
+                <input type="password" id="token" placeholder="Enter secure token" class="admin-input" required>
+                <button type="button" class="toggle-btn" id="togglePasswordBtn" onclick="toggleVisibility()">Show</button>
+            </div>
+            <button class="btn-primary" onclick="login()">Access Dashboard</button>
+            <div id="login-status" class="status-message"></div>
+        </div>
+
+        <!-- Dashboard View -->
+        <div id="dashboard-view" style="display: none;">
+            <div class="alert success" style="text-align: center; margin-bottom: 1.5rem;">✓ Authenticated</div>
+
+            <!-- Contributors Management -->
+            <div class="admin-section">
+                <h2 class="section-title">Trusted Contributors</h2>
+                <div id="contributors-list" class="contributors-list"></div>
+                <div class="form-card">
+                    <label class="admin-label">Name</label>
+                    <input type="text" id="contributor-name" placeholder="e.g., Alice" class="admin-input">
+                    <label class="admin-label mt-3">Public Key (hex)</label>
+                    <input type="text" id="contributor-key" placeholder="64-character hex string" class="admin-input">
+                    <button class="btn-success" onclick="addContributor()">Add Contributor</button>
+                    <div id="contributor-status" class="status-message"></div>
+                </div>
+            </div>
+
+            <!-- Remote Sync -->
+            <div class="admin-section">
+                <h2 class="section-title">Add Remote Base or Guide</h2>
+                <label class="admin-label">Remote File or Archive URL</label>
+                <input type="text" id="url" placeholder="https://example.com/kb.tar.gz or raw file URL" class="admin-input">
+                <label class="admin-label mt-3">Target Directory Name (Optional)</label>
+                <input type="text" id="filename" placeholder="Leave blank to auto-detect from URL" class="admin-input">
+                <div class="checkbox-group">
+                    <input type="checkbox" id="saveState" checked>
+                    <label class="checkbox-label">Save to config.json (Startup Sync)</label>
+                </div>
+                <button class="btn-primary" onclick="syncGuide()">Import & Sync</button>
+                <div id="status" class="status-message"></div>
+            </div>
+
+            <!-- Synced Targets -->
+            <div class="admin-section">
+                <h2 class="section-title">Currently Synced Sync Targets</h2>
+                <ul id="sync-list" class="sync-list"></ul>
+            </div>
+        </div>
     </div>
 
-    <div id="dashboard-view">
-      <p style="
-                        color: #2ed573;
-                        font-weight: bold;
-                        text-align: center;
-                    ">
-        ✓ Authenticated
-      </p>
+    <script>
+        let sessionToken = "";
 
-      <h2>Add Remote Base or Guide</h2>
-      <label>Remote File or Archive URL</label>
-      <input type="text" id="url" placeholder="https://example.com/kb.tar.gz or raw file URL" required />
-
-      <label>Target Directory Name (Optional)</label>
-      <input type="text" id="filename" placeholder="Leave blank to auto-detect from URL" />
-
-      <div class="checkbox-group">
-        <input type="checkbox" id="saveState" checked />
-        <label style="margin: 0">Save to config.json (Startup Sync)</label>
-      </div>
-
-      <button class="primary" onclick="syncGuide()">
-        Import & Sync
-      </button>
-      <div id="status"></div>
-
-      <h2>Currently Synced Sync Targets</h2>
-      <ul id="sync-list"></ul>
-    </div>
-  </div>
-
-  <script>
-    let sessionToken = "";
-
-    // Toggle Password Visibility
-    function toggleVisibility() {
-      const input = document.getElementById("token");
-      const btn = document.getElementById("togglePasswordBtn");
-      if (input.type === "password") {
-        input.type = "text";
-        btn.textContent = "Hide";
-      } else {
-        input.type = "password";
-        btn.textContent = "Show";
-      }
-    }
-
-    // Authenticate and swap views safely
-    async function login() {
-      const tokenInput = document.getElementById("token").value;
-      const status = document.getElementById("login-status");
-
-      status.textContent = "Verifying with Node...";
-      status.className = "";
-
-      try {
-        const response = await fetch("/-/admin/config", {
-          headers: { "X-Admin-Token": tokenInput },
-        });
-
-        if (response.ok) {
-          sessionToken = tokenInput;
-          document.getElementById("login-view").style.display =
-            "none";
-          document.getElementById(
-            "dashboard-view",
-          ).style.display = "block";
-
-          const data = await response.json();
-          renderList(data);
-        } else {
-          status.textContent = "Error: Invalid Admin Token!";
-          status.className = "error";
+        function toggleVisibility() {
+            const input = document.getElementById("token");
+            const btn = document.getElementById("togglePasswordBtn");
+            if (input.type === "password") {
+                input.type = "text";
+                btn.textContent = "Hide";
+            } else {
+                input.type = "password";
+                btn.textContent = "Show";
+            }
         }
-      } catch (err) {
-        status.textContent =
-          "Server communication failure. Check terminal logs.";
-        status.className = "error";
-      }
-    }
 
-    // Render active tracking lists
-    function renderList(syncArray) {
-      const list = document.getElementById("sync-list");
-      list.innerHTML = "";
-
-      if (!syncArray || syncArray.length === 0) {
-        list.innerHTML =
-          '<li style="justify-content: center; color: #888;">No startup sync hooks configured.</li>';
-        return;
-      }
-
-      syncArray.forEach((item) => {
-        const li = document.createElement("li");
-        // We escape the filename to handle nested directory slashes safely in JS arguments
-        const escapedFilename = btoa(item.filename);
-        li.innerHTML = `
-                        <div class="sync-info">
-                            <strong>${item.filename}</strong>
-                            <span>${item.url}</span>
-                            <label style="margin-top:0.5rem; display:flex; align-items:center; gap:0.25rem; font-size:0.75rem; color:#aaa;">
-                                <input type="checkbox" id="delete-files-${escapedFilename}" checked> Delete local files on remove
-                            </label>
-                        </div>
-                        <button class="btn-delete" onclick="removeGuide('${item.filename}', '${escapedFilename}')">Remove</button>
-                    `;
-        list.appendChild(li);
-      });
-    }
-    // Fire archive imports
-    async function syncGuide() {
-      const status = document.getElementById("status");
-      const payload = {
-        url: document.getElementById("url").value,
-        filename: document.getElementById("filename").value,
-        saveToStartup: document.getElementById("saveState").checked,
-      };
-
-      status.textContent = "Syncing...";
-      status.className = "";
-
-      try {
-        const response = await fetch("/-/import", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Admin-Token": sessionToken,
-          },
-          body: JSON.stringify(payload),
-        });
-
-        const text = await response.text();
-        if (response.ok) {
-          status.textContent = text;
-          status.className = "success";
-          document.getElementById("url").value = "";
-          document.getElementById("filename").value = "";
-          refreshList();
-        } else {
-          status.textContent = "Error: " + text;
-          status.className = "error";
+        async function login() {
+            const tokenInput = document.getElementById("token").value;
+            const statusDiv = document.getElementById("login-status");
+            statusDiv.textContent = "Verifying...";
+            statusDiv.className = "status-message";
+            try {
+                const response = await fetch("/-/admin/config", {
+                    headers: { "X-Admin-Token": tokenInput },
+                });
+                if (response.ok) {
+                    sessionToken = tokenInput;
+                    document.getElementById("login-view").style.display = "none";
+                    document.getElementById("dashboard-view").style.display = "block";
+                    const data = await response.json();
+                    renderList(data);
+                    loadContributors();
+                } else {
+                    statusDiv.textContent = "Error: Invalid Admin Token!";
+                    statusDiv.classList.add("error");
+                }
+            } catch (err) {
+                statusDiv.textContent = "Server communication failure. Check terminal logs.";
+                statusDiv.classList.add("error");
+            }
         }
-      } catch (err) {
-        status.textContent = "Network error syncing target.";
-        status.className = "error";
-      }
-    }
 
-    // Drop remote data scopes dynamically
-    async function removeGuide(filename, escapedFilename) {
-      const deleteCheckbox = document.getElementById(
-        `delete-files-${escapedFilename}`,
-      );
-      const deleteLocal = deleteCheckbox
-        ? deleteCheckbox.checked
-        : false;
-
-      let msg = `Are you sure you want to stop tracking "${filename}"?`;
-      if (deleteLocal) {
-        msg +=
-          " This will permanently delete its files from system storage!";
-      }
-
-      if (!confirm(msg)) return;
-
-      try {
-        const response = await fetch("/-/admin/remove", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Admin-Token": sessionToken,
-          },
-          body: JSON.stringify({
-            filename: filename,
-            deleteLocalFiles: deleteLocal, // <-- PASSES STATE TO BACKEND
-          }),
-        });
-
-        if (response.ok) {
-          refreshList();
-        } else {
-          alert(
-            "Prune operation failed: " +
-            (await response.text()),
-          );
+        function renderList(syncArray) {
+            const list = document.getElementById("sync-list");
+            list.innerHTML = "";
+            if (!syncArray || syncArray.length === 0) {
+                list.innerHTML = '<li class="empty-message">No startup sync hooks configured.</li>';
+                return;
+            }
+            syncArray.forEach((item) => {
+                const li = document.createElement("li");
+                li.className = "sync-item";
+                const escapedFilename = btoa(item.filename);
+                li.innerHTML = `
+                    <div class="sync-info">
+                        <strong>${escapeHtml(item.filename)}</strong>
+                        <span>${escapeHtml(item.url)}</span>
+                        <label class="checkbox-label-small">
+                            <input type="checkbox" id="delete-files-${escapedFilename}" checked> Delete local files on remove
+                        </label>
+                    </div>
+                    <button class="btn-delete" onclick="removeGuide('${escapeHtml(item.filename)}', '${escapedFilename}')">Remove</button>
+                `;
+                list.appendChild(li);
+            });
         }
-      } catch (err) {
-        alert("Network communication fault.");
-      }
-    }
 
-    // Silent status sync background refreshes
-    async function refreshList() {
-      const response = await fetch("/-/admin/config", {
-        headers: { "X-Admin-Token": sessionToken },
-      });
-      if (response.ok) {
-        const data = await response.json();
-        renderList(data);
-      }
-    }
-  </script>
+        async function syncGuide() {
+            const statusDiv = document.getElementById("status");
+            const payload = {
+                url: document.getElementById("url").value,
+                filename: document.getElementById("filename").value,
+                saveToStartup: document.getElementById("saveState").checked,
+            };
+            statusDiv.textContent = "Syncing...";
+            statusDiv.className = "status-message";
+            try {
+                const response = await fetch("/-/import", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-Admin-Token": sessionToken,
+                    },
+                    body: JSON.stringify(payload),
+                });
+                const text = await response.text();
+                if (response.ok) {
+                    statusDiv.textContent = text;
+                    statusDiv.classList.add("success");
+                    document.getElementById("url").value = "";
+                    document.getElementById("filename").value = "";
+                    refreshList();
+                } else {
+                    statusDiv.textContent = "Error: " + text;
+                    statusDiv.classList.add("error");
+                }
+            } catch (err) {
+                statusDiv.textContent = "Network error syncing target.";
+                statusDiv.classList.add("error");
+            }
+        }
+
+        async function removeGuide(filename, escapedFilename) {
+            const deleteCheckbox = document.getElementById(`delete-files-${escapedFilename}`);
+            const deleteLocal = deleteCheckbox ? deleteCheckbox.checked : false;
+            let msg = `Are you sure you want to stop tracking "${filename}"?`;
+            if (deleteLocal) msg += " This will permanently delete its files from system storage!";
+            if (!confirm(msg)) return;
+            try {
+                const response = await fetch("/-/admin/remove", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "X-Admin-Token": sessionToken,
+                    },
+                    body: JSON.stringify({ filename, deleteLocalFiles: deleteLocal }),
+                });
+                if (response.ok) {
+                    refreshList();
+                } else {
+                    alert("Prune operation failed: " + (await response.text()));
+                }
+            } catch (err) {
+                alert("Network communication fault.");
+            }
+        }
+
+        async function refreshList() {
+            const response = await fetch("/-/admin/config", {
+                headers: { "X-Admin-Token": sessionToken },
+            });
+            if (response.ok) {
+                const data = await response.json();
+                renderList(data);
+            }
+        }
+
+        async function loadContributors() {
+            const response = await fetch('/-/admin/contributors', {
+                headers: { 'X-Admin-Token': sessionToken }
+            });
+            if (response.ok) {
+                const contributors = await response.json();
+                renderContributors(contributors);
+            } else {
+                console.error('Failed to load contributors');
+            }
+        }
+
+        function renderContributors(contributors) {
+            const container = document.getElementById('contributors-list');
+            if (!contributors.length) {
+                container.innerHTML = '<p class="empty-message">No trusted contributors configured.</p>';
+                return;
+            }
+            const ul = document.createElement('ul');
+            ul.className = 'contributor-list';
+            contributors.forEach(c => {
+                const li = document.createElement('li');
+                li.className = 'contributor-item';
+                li.innerHTML = `
+                    <div>
+                        <strong>${escapeHtml(c.name)}</strong><br>
+                        <code class="contributor-key">${escapeHtml(c.public_key)}</code>
+                    </div>
+                    <button class="btn-delete-small" onclick="deleteContributor('${escapeHtml(c.public_key)}')">Delete</button>
+                `;
+                ul.appendChild(li);
+            });
+            container.innerHTML = '';
+            container.appendChild(ul);
+        }
+
+        async function addContributor() {
+            const name = document.getElementById('contributor-name').value.trim();
+            const pubkey = document.getElementById('contributor-key').value.trim();
+            const statusDiv = document.getElementById('contributor-status');
+            if (!name || !pubkey) {
+                statusDiv.textContent = 'Name and public key are required.';
+                statusDiv.className = 'status-message error';
+                return;
+            }
+            if (pubkey.length !== 64 || !/^[0-9a-fA-F]+$/.test(pubkey)) {
+                statusDiv.textContent = 'Public key must be a 64-character hex string.';
+                statusDiv.className = 'status-message error';
+                return;
+            }
+            statusDiv.textContent = 'Adding...';
+            statusDiv.className = 'status-message';
+            try {
+                const response = await fetch('/-/admin/contributors/add', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Admin-Token': sessionToken
+                    },
+                    body: JSON.stringify({ name, public_key: pubkey })
+                });
+                if (response.ok) {
+                    statusDiv.textContent = 'Contributor added successfully.';
+                    statusDiv.classList.add('success');
+                    document.getElementById('contributor-name').value = '';
+                    document.getElementById('contributor-key').value = '';
+                    loadContributors();
+                } else {
+                    const text = await response.text();
+                    statusDiv.textContent = `Error: ${text}`;
+                    statusDiv.classList.add('error');
+                }
+            } catch (err) {
+                statusDiv.textContent = 'Network error.';
+                statusDiv.classList.add('error');
+            }
+        }
+
+        async function deleteContributor(publicKey) {
+            if (!confirm('Remove this trusted contributor? Existing signatures from this key will become unverified.')) return;
+            const response = await fetch('/-/admin/contributors/delete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Admin-Token': sessionToken
+                },
+                body: JSON.stringify({ public_key: publicKey })
+            });
+            if (response.ok) {
+                loadContributors();
+            } else {
+                const text = await response.text();
+                alert('Failed to delete: ' + text);
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/[&<>]/g, function(m) {
+                if (m === '&') return '&amp;';
+                if (m === '<') return '&lt;';
+                if (m === '>') return '&gt;';
+                return m;
+            });
+        }
+    </script>
 </body>
-
 </html>

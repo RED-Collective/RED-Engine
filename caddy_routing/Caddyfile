@@ -8,15 +8,6 @@ http://localhost:8080, :80 {
         Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     }
 
-    # Optional: Basic rate limiting (if you are testing webhook floods locally)
-    # rate_limit {
-    #     zone local_limit {
-    #         key {remote_ip}
-    #         window 1s
-    #         events 10
-    #     }
-    # }
-
-    # Forward all traffic (including Tailwind assets embedded in Go) to the backend
-    reverse_proxy red-engine:8080
+    # Forward all traffic to the backend using the exact docker-compose service name
+    reverse_proxy red_engine:8080
 }
