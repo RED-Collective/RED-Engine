@@ -16,6 +16,7 @@ services:
       - ./data:/app/data:rw
       - ./config.json:/app/config.json:rw
       - ./contributors.json:/app/contributors.json:ro
+    user: "${UID:-1000}:1000"   
 
   caddy_proxy:
     image: docker.io/library/caddy:latest
