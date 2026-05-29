@@ -55,8 +55,6 @@ func (s *Store) Nav() map[string]*models.Section {
 func (s *Store) Watch() error {
 	w := watcher.New()
 
-	// FIX: Removed w.SetMaxEvents(1) which was dropping bulk file updates
-
 	w.FilterOps(watcher.Write, watcher.Create, watcher.Remove, watcher.Rename)
 
 	go func() {
@@ -144,6 +142,9 @@ func (s *Store) Reload() error {
 }
 
 func (s *Store) UpdateFiles(changedPaths []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for _, p := range changedPaths {
 		p = filepath.Clean(p)
 		if filepath.Ext(p) != ".md" {
@@ -154,8 +155,8 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 		absP, _ := filepath.Abs(p)
 		absData, _ := filepath.Abs(s.dataDir)
 		rel, err := filepath.Rel(absData, absP)
-		if err != nil {
-			continue
+		if err != nil || strings.HasPrefix(rel, "..") {
+			continue // Block traversal escapes
 		}
 
 		cleanPath := strings.TrimSuffix(strings.TrimPrefix(filepath.ToSlash(rel), "/"), ".md")
@@ -181,7 +182,14 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 
 func (s *Store) loadSecurityData() (map[string]string, map[string]models.ManifestEntry) {
 	trustedKeys := make(map[string]string)
-	if trustData, err := os.ReadFile("contributors.json"); err == nil {
+	
+	// FIX: Resolve the trusted keys relative to the data directory's parent (standard repository root)
+	trustPath := filepath.Join(filepath.Dir(s.dataDir), "contributors.json")
+	if _, err := os.Stat(trustPath); os.IsNotExist(err) {
+		trustPath = "contributors.json" // Fallback to process CWD
+	}
+
+	if trustData, err := os.ReadFile(trustPath); err == nil {
 		var contributors []models.Contributor
 		if err := json.Unmarshal(trustData, &contributors); err == nil {
 			for _, c := range contributors {
@@ -306,7 +314,6 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// FIX: Explicitly initialize the array to prevent JSON returning "null"
 	items := make([]SearchItem, 0)
 
 	var walk func(sec *models.Section, parentPath string)
@@ -342,7 +349,6 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 		}
 	}
 
-	// Extract keys and sort them alphabetically
 	keys := make([]string, 0, len(s.nav))
 	for k := range s.nav {
 		keys = append(keys, k)
@@ -441,6 +447,7 @@ func (s *Store) removeFromMap(nav map[string]*models.Section, parts []string) {
 		}
 	}
 }
+
 func (s *Store) Get(path string) *models.Article {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

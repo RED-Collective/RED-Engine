@@ -3,7 +3,6 @@ package router
 import (
 	"encoding/json"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,12 +20,9 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Note: We removed the manual Admin Token checks here because
-	// the adminOnly middleware in router.go already secures this endpoint!
-
 	var req struct {
 		URL           string `json:"url"`
-		Filename      string `json:"filename"` // Used as the clean directory or path name
+		Filename      string `json:"filename"`
 		SaveToStartup bool   `json:"saveToStartup"`
 	}
 
@@ -35,49 +31,32 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. SSRF Protection & URL Parsing
 	parsedURL, err := url.Parse(req.URL)
 	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") {
 		http.Error(w, "Invalid URL scheme", http.StatusBadRequest)
 		return
-	}
-	hostname := parsedURL.Hostname()
-	addrs, err := net.LookupHost(hostname)
-	if err != nil {
-		http.Error(w, "Failed to resolve hostname", http.StatusBadRequest)
-		return
-	}
-	for _, addr := range addrs {
-		ip := net.ParseIP(addr)
-		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
-			http.Error(w, "Local network imports are strictly forbidden", http.StatusForbidden)
-			return
-		}
 	}
 
 	// --- SMART GITHUB URL REWRITER ---
 	if parsedURL.Host == "github.com" {
 		pathParts := strings.Split(strings.Trim(parsedURL.Path, "/"), "/")
 		if len(pathParts) == 2 {
-			// If someone pasted a Repo home page. Auto-convert to a ZIP archive of the default branch.
 			req.URL = "https://github.com/" + pathParts[0] + "/" + pathParts[1] + "/archive/HEAD.zip"
-			parsedURL, _ = url.Parse(req.URL) // Re-parse for downstream logic
+			parsedURL, _ = url.Parse(req.URL)
 		} else if len(pathParts) > 2 && pathParts[2] == "blob" {
-			// If someone pasted a Web UI link to a specific file. Auto-convert to raw text.
 			req.URL = "https://raw.githubusercontent.com/" + pathParts[0] + "/" + pathParts[1] + "/" + strings.Join(pathParts[3:], "/")
 			parsedURL, _ = url.Parse(req.URL)
 		}
 	}
 	// --------------------------------------
 
-	// 2. Directory & Path Sanitization & Auto-Naming
 	targetSubPath := filepath.Clean(req.Filename)
 
 	if targetSubPath == "." || targetSubPath == "" {
 		pathParts := strings.Split(strings.TrimRight(parsedURL.Path, "/"), "/")
 		if len(pathParts) > 0 {
 			if parsedURL.Host == "github.com" && len(pathParts) >= 3 && pathParts[3] == "archive" {
-				targetSubPath = pathParts[2] // Automatically grabs the repo name
+				targetSubPath = pathParts[2]
 			} else {
 				lastPart := pathParts[len(pathParts)-1]
 				lastPart = strings.TrimSuffix(lastPart, ".zip")
@@ -91,12 +70,10 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// FIX: Remove "remote" from the fallback
 	if targetSubPath == "." || targetSubPath == "" || strings.HasPrefix(targetSubPath, "..") || filepath.IsAbs(targetSubPath) {
 		targetSubPath = "sync-" + time.Now().Format("20060102150405")
 	}
 
-	// Formulate the destination path straight inside the engine's root store directory
 	destinationDir := filepath.Join(h.store.DataDir(), targetSubPath)
 
 	lowerURL := strings.ToLower(req.URL)
@@ -116,13 +93,11 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// If it's a single raw markdown file, save it cleanly
 		if err := os.MkdirAll(filepath.Dir(destinationDir), 0755); err != nil {
 			http.Error(w, "Failed to create directory structure", http.StatusInternalServerError)
 			return
 		}
 
-		// Checks file extension
 		if !strings.HasSuffix(strings.ToLower(destinationDir), ".md") {
 			destinationDir += ".md"
 			targetSubPath += ".md"
@@ -135,8 +110,7 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		}
 		httpReq.Header.Set("User-Agent", "RED-Engine-Sync/1.0")
 
-		client := &http.Client{Timeout: 15 * time.Second}
-		resp, err := client.Do(httpReq)
+		resp, err := fetch.SafeClient().Do(httpReq)
 		if err != nil {
 			http.Error(w, "Failed to connect to remote server", http.StatusBadGateway)
 			return
@@ -155,19 +129,17 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		}
 		defer outFile.Close()
 
-		if _, err := io.Copy(outFile, resp.Body); err != nil {
+		if _, err := io.Copy(outFile, io.LimitReader(resp.Body, 10*1024*1024)); err != nil {
 			http.Error(w, "Failed to write content", http.StatusInternalServerError)
 			return
 		}
 	}
 
-	// 4. Hot-reload the memory map store index
 	if err := h.store.Reload(); err != nil {
 		http.Error(w, "Content updated but failed to update memory index", http.StatusInternalServerError)
 		return
 	}
 
-	// 5. Persist to configuration state if requested
 	if req.SaveToStartup {
 		h.cfg.Mu.Lock()
 		var newSync []config.RemoteSync
@@ -188,8 +160,6 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("Successfully synced to data/" + targetSubPath))
 }
-
-// --- SECURE DASHBOARD ENDPOINTS ---
 
 func (h *handler) adminConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -213,7 +183,6 @@ func (h *handler) adminRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Remove from the Config Array
 	h.cfg.Mu.Lock()
 	var newSync []config.RemoteSync
 	for _, sync := range h.cfg.StartupSync {
@@ -224,22 +193,19 @@ func (h *handler) adminRemove(w http.ResponseWriter, r *http.Request) {
 	h.cfg.StartupSync = newSync
 	h.cfg.Mu.Unlock()
 
-	// 2. Save Config to Disk
 	if err := h.cfg.Save(h.cfgPath); err != nil {
 		http.Error(w, "Failed to save configuration", http.StatusInternalServerError)
 		return
 	}
 
-	// 3. CONDITIONALLY Delete the physical target directory or file safely
 	if req.DeleteLocalFiles {
 		safeName := filepath.Clean(req.Filename)
 		if safeName != "." && safeName != "" && !strings.HasPrefix(safeName, "..") && !filepath.IsAbs(safeName) {
 			fullRemovalPath := filepath.Join(h.store.DataDir(), safeName)
-			os.RemoveAll(fullRemovalPath) // Cleans folders and files instantly
+			os.RemoveAll(fullRemovalPath) 
 		}
 	}
 
-	// 4. Hot-reload the engine so it updates the UI mapping
 	h.store.Reload()
 
 	w.WriteHeader(http.StatusOK)

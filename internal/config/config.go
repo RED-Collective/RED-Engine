@@ -43,11 +43,10 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
-// NEW: Allows the application to save changes back to disk
 func (c *Config) Save(path string) error {
-	c.Mu.RLock()
+	c.Mu.Lock()
+	defer c.Mu.Unlock()
 	b, err := json.MarshalIndent(c, "", "  ")
-	c.Mu.RUnlock()
 	if err != nil {
 		return err
 	}

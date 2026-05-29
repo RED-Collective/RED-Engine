@@ -2,36 +2,47 @@ package router
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 )
 
 func (h *handler) health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
+	if _, err := w.Write([]byte("OK")); err != nil {
+		log.Printf("⚠️ health: write error: %v", err)
+	}
 }
 
 func (h *handler) manifest(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"name": "RED Engine", "short_name": "RED", "start_url": "/", "display": "standalone"}`))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if _, err := w.Write([]byte(`{"name":"RED Engine","short_name":"RED","start_url":"/","display":"standalone"}`)); err != nil {
+		log.Printf("⚠️ manifest: write error: %v", err)
+	}
 }
 
 func (h *handler) searchIndex(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+	index := h.store.BuildSearchIndex()
 
-	// FIX: Explicitly forbid browsers and proxies from caching this JSON file
+	var payload []byte
+	var err error
+
+	if index == nil {
+		payload = []byte("[]")
+	} else {
+		payload, err = json.Marshal(index)
+		if err != nil {
+			http.Error(w, "Failed to generate search index", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
+	w.WriteHeader(http.StatusOK)
 
-	index := h.store.BuildSearchIndex()
-
-	// Safety net: ensure it returns an empty array [] instead of a 'null' object if the DB is empty
-	if index == nil {
-		w.Write([]byte("[]"))
-		return
-	}
-
-	if err := json.NewEncoder(w).Encode(index); err != nil {
-		http.Error(w, "Failed to generate search index", http.StatusInternalServerError)
+	if _, err = w.Write(payload); err != nil {
+		log.Printf("⚠️ searchIndex: write error: %v", err)
 	}
 }

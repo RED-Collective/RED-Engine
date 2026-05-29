@@ -29,7 +29,6 @@ func normalizeURL(u string) string {
 	return u
 }
 
-// verifySignature strictly checks the X-Hub-Signature-256 header against the request body
 func verifySignature(secret string, payload []byte, signatureHeader string) bool {
 	if !strings.HasPrefix(signatureHeader, "sha256=") {
 		return false
@@ -49,26 +48,25 @@ func (h *handler) webhookSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Read raw body (Required for HMAC calculation)
 	bodyBytes, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Failed to read request body", http.StatusBadRequest)
 		return
 	}
 
-	// 2. Validate HMAC-SHA256 Signature to prevent Ping of Death
-	if h.cfg.WebhookSecret != "" {
-		sig := r.Header.Get("X-Hub-Signature-256")
-		if !verifySignature(h.cfg.WebhookSecret, bodyBytes, sig) {
-			log.Println("🚨 Security Alert: Blocked webhook payload with invalid signature!")
-			http.Error(w, "Unauthorized: Invalid Signature", http.StatusUnauthorized)
-			return
-		}
-	} else {
-		log.Println("⚠️ Webhook hit, but WebhookSecret is empty in config. Bypassing security check...")
+	if h.cfg.WebhookSecret == "" {
+		log.Println("🚨 Webhook blocked: WebhookSecret is not configured. Webhooks are disabled for security.")
+		http.Error(w, "Webhooks disabled: no secret configured", http.StatusForbidden)
+		return
 	}
 
-	// 3. Parse Payload
+	sig := r.Header.Get("X-Hub-Signature-256")
+	if !verifySignature(h.cfg.WebhookSecret, bodyBytes, sig) {
+		log.Println("🚨 Security Alert: Blocked webhook payload with invalid signature!")
+		http.Error(w, "Unauthorized: Invalid Signature", http.StatusUnauthorized)
+		return
+	}
+
 	var payload githubWebhookPayload
 	if err := json.Unmarshal(bodyBytes, &payload); err != nil {
 		log.Printf("⚠️ Failed to decode webhook payload: %v", err)
@@ -89,9 +87,7 @@ func (h *handler) webhookSync(w http.ResponseWriter, r *http.Request) {
 	normalizedIncoming := normalizeURL(incomingURL)
 	log.Printf("🔄 Webhook verified for repository: %s", normalizedIncoming)
 
-	// 4. Background Sync processing
 	go func() {
-		// Acquire Split-Brain Mutex lock
 		h.store.BeginRemoteSync()
 		defer h.store.EndRemoteSync()
 
