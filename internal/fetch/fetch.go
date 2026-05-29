@@ -4,13 +4,43 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// SafeClient creates an HTTP client that mitigates DNS Rebinding SSRF
+func SafeClient() *http.Client {
+	return &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				host, port, err := net.SplitHostPort(addr)
+				if err != nil {
+					return nil, err
+				}
+				ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+				if err != nil || len(ips) == 0 {
+					return nil, fmt.Errorf("dns lookup failed")
+				}
+
+				for _, ip := range ips {
+					if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsMulticast() || ip.IP.IsUnspecified() {
+						return nil, fmt.Errorf("SSRF Blocked: forbidden IP %s", ip.IP)
+					}
+				}
+				safeAddr := net.JoinHostPort(ips[0].IP.String(), port)
+				return (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, network, safeAddr)
+			},
+		},
+	}
+}
 
 func Pull(url, srcType, destDir string) error {
 	// --- NEW: Native Git Intercept ---
@@ -26,7 +56,7 @@ func Pull(url, srcType, destDir string) error {
 		if !strings.HasSuffix(strings.ToLower(destDir), ".md") {
 			destDir += ".md"
 		}
-		resp, err := http.Get(url)
+		resp, err := SafeClient().Get(url)
 		if err != nil {
 			return err
 		}
@@ -39,12 +69,12 @@ func Pull(url, srcType, destDir string) error {
 			return err
 		}
 		defer outFile.Close()
-		_, err = io.Copy(outFile, resp.Body)
+		_, err = io.Copy(outFile, io.LimitReader(resp.Body, 10*1024*1024)) // 10MB Limit
 		return err
 	}
 	// ---------------------------------
 
-	resp, err := http.Get(url)
+	resp, err := SafeClient().Get(url)
 	if err != nil {
 		return err
 	}
@@ -60,7 +90,7 @@ func Pull(url, srcType, destDir string) error {
 	}
 	defer os.Remove(tmp.Name())
 
-	if _, err = io.Copy(tmp, resp.Body); err != nil {
+	if _, err = io.Copy(tmp, io.LimitReader(resp.Body, 100*1024*1024)); err != nil { // 100MB Limit
 		return err
 	}
 	tmp.Close()
@@ -75,15 +105,10 @@ func Pull(url, srcType, destDir string) error {
 	}
 }
 
-// PullDelta is specifically designed for Webhooks. It attempts to return the exact
-// list of changed files to allow for granular memory hot-reloading.
 func PullDelta(url, srcType, destDir string) ([]string, error) {
 	if srcType == "git" {
 		return pullGit(url, destDir)
 	}
-
-	// Fallback for zip/tar files.
-	// We extract everything, so we return 'nil' to force a full memory reload.
 	err := Pull(url, srcType, destDir)
 	return nil, err
 }
@@ -139,20 +164,12 @@ func extractZip(src, dest string) error {
 }
 
 func writeEntry(dest, name string, isDir bool, r io.Reader) error {
-	parts := strings.SplitN(filepath.ToSlash(name), "/", 2)
-
-	rel := name
-	if len(parts) >= 2 {
-		rel = parts[1]
-	}
-	if rel == "" {
-		return nil
+	rel := strings.TrimPrefix(filepath.ToSlash(filepath.Clean(name)), "/")
+	if rel == "" || strings.HasPrefix(rel, "..") {
+		return nil // Block traversal
 	}
 
 	target := filepath.Join(dest, filepath.FromSlash(rel))
-	if !strings.HasPrefix(target, filepath.Clean(dest)+string(os.PathSeparator)) {
-		return fmt.Errorf("fetch: path traversal blocked: %s", name)
-	}
 
 	if isDir {
 		return os.MkdirAll(target, 0755)
@@ -168,6 +185,6 @@ func writeEntry(dest, name string, isDir bool, r io.Reader) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, r)
+	_, err = io.Copy(out, io.LimitReader(r, 100*1024*1024)) // 100MB Extracted File Limit
 	return err
 }
