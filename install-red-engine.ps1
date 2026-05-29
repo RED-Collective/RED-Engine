@@ -31,10 +31,14 @@ if (-Not (Test-Path ".\data")) {
     Write-Host "[*] .\data directory already exists."
 }
 
-# FIX: Prevent container permission-denied errors by ensuring the 
-# restricted 'reduser' inside the container can write to the host volume.
-Write-Host "[*] Setting universal read/write permissions on .\data..." -ForegroundColor Cyan
-icacls ".\data" /grant "Everyone:(OI)(CI)F" /T | Out-Null
+# Instead of giving Everyone full control, let container handle permissions
+# No special ACL needed if using Podman with --userns=keep-id
+Write-Host "[*] Creating ./data directory (container will manage permissions)" -ForegroundColor Cyan
+if (-Not (Test-Path ".\data")) {
+    New-Item -ItemType Directory -Path ".\data" | Out-Null
+} else {
+    Write-Host "[*] ./data directory already exists."
+}
 
 if (-Not (Test-Path "config.json")) {
     Write-Host "[*] Generating default config.json..."
