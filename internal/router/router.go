@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"os" // <-- for DEV_MODE check
 
 	"github.com/RED-Collective/red-engine/internal/config"
 	"github.com/RED-Collective/red-engine/internal/store"
@@ -26,12 +27,38 @@ type handler struct {
 }
 
 func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
-	tmpl := template.Must(template.ParseFS(files, "templates/base.html"))
-	adminTmpl := template.Must(template.ParseFS(files, "templates/admin.html"))
+	var tmpl *template.Template
+	var adminTmpl *template.Template
+	var staticFS http.FileSystem
 
-	staticFS, err := fs.Sub(files, "static")
-	if err != nil {
-		panic(err)
+	devMode := os.Getenv("DEV_MODE") == "true"
+
+	if devMode {
+		// ---------- DEV MODE: read templates and static files from disk ----------
+		// Templates: parse from disk each time (or cache with a watcher, but simple re-parse on every request is fine for dev)
+		// To avoid parsing on every request, we'll wrap the template loading in a function that re-parses when files change.
+		// For simplicity, we'll use a helper that re-parses on each request (acceptable for development).
+		// But we can also parse once and rely on air/restart – your choice.
+		// Here we parse once from disk (still requires restart on template change, but static files are live).
+		// For true live template reload, we can implement a custom loader. Let's keep it simple: parse once from disk.
+		// If you modify a template, restart the server (Ctrl+C, then go run). Air will automate that later.
+		basePath := "internal/router/templates/base.html"
+		adminPath := "internal/router/templates/admin.html"
+		tmpl = template.Must(template.ParseFiles(basePath))
+		adminTmpl = template.Must(template.ParseFiles(adminPath))
+
+		// Static files from disk
+		staticFS = http.Dir("internal/router/static")
+	} else {
+		// ---------- PRODUCTION MODE: use embedded files ----------
+		tmpl = template.Must(template.ParseFS(files, "templates/base.html"))
+		adminTmpl = template.Must(template.ParseFS(files, "templates/admin.html"))
+
+		embedded, err := fs.Sub(files, "static")
+		if err != nil {
+			panic(err)
+		}
+		staticFS = http.FS(embedded)
 	}
 
 	h := &handler{
@@ -43,26 +70,24 @@ func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(staticFS)))
 
 	// Public Routes
 	mux.HandleFunc("/", h.serve)
 	mux.HandleFunc("/-/health", h.health)
 	mux.HandleFunc("/-/manifest", h.manifest)
-	mux.HandleFunc("/-/search-index.json", h.searchIndex) // <--- ADD THIS LINE
+	mux.HandleFunc("/-/search-index.json", h.searchIndex)
 	mux.HandleFunc("/-/source/", h.source)
 	mux.HandleFunc("/-/download/", h.download)
-	// NEW: Generic Webhook Endpoint (Security deferred)
 	mux.HandleFunc("/-/webhook/sync", h.webhookSync)
 
-	// The Admin UI
+	// Admin UI
 	mux.HandleFunc("/-/admin", h.adminUI)
 	// Contributors management (admin only)
 	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
 	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributor))
 	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.deleteContributor))
-	// SECURE ROUTES: Wrapped in the adminOnly middleware
-
+	// Secure routes
 	mux.HandleFunc("/-/reload", h.adminOnly(h.reload))
 	mux.HandleFunc("/-/import", h.adminOnly(h.importRemote))
 	mux.HandleFunc("/-/admin/config", h.adminOnly(h.adminConfig))
@@ -76,13 +101,11 @@ func (h *handler) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.Header.Get("X-Admin-Token")
 
-		// 1. Check if token is empty
 		if token == "" || h.cfg.AdminToken == "" {
 			http.Error(w, "Unauthorized: Missing Token", http.StatusUnauthorized)
 			return
 		}
 
-		// 2. Use ConstantTimeCompare on hashes to prevent length-based timing attacks
 		expectedHash := sha256.Sum256([]byte(h.cfg.AdminToken))
 		providedHash := sha256.Sum256([]byte(token))
 		if subtle.ConstantTimeCompare(providedHash[:], expectedHash[:]) != 1 {
@@ -90,7 +113,6 @@ func (h *handler) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 3. Token is valid, proceed to the requested function
 		next(w, r)
 	}
 }

@@ -1,5 +1,4 @@
-http://localhost:8080, :80 {
-    # Core security headers retained from red-engine
+:80 {
     header {
         X-Content-Type-Options nosniff
         X-Frame-Options DENY
@@ -7,7 +6,5 @@ http://localhost:8080, :80 {
         Referrer-Policy no-referrer
         Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';"
     }
-
-    # Forward all traffic to the backend using the exact docker-compose service name
     reverse_proxy red_engine:8080
 }

@@ -5,14 +5,11 @@
   "sourceURL": "",
   "sourceType": "",
   "adminToken": "aYrlDXsjUxEH12Ju7wl3B1Gq",
+  "webhookSecret": "",
   "startupSync": [
     {
-      "url": "https://github.com/mundimark/awesome-markdown.git",
-      "filename": "Awesome Markdown"
-    },
-    {
       "url": "https://github.com/StandardCodebase/test-auth.git",
-      "filename": "test-auth"
+      "filename": "Test Authentication"
     }
   ]
 }

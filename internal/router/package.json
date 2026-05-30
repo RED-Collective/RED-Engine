@@ -1,7 +1,0 @@
-{
-  "name": "red-engine-router",
-  "version": "1.0.0",
-  "scripts": {
-    "build": "echo 'Tailwind build skipped - no CSS processing needed'"
-  }
-}

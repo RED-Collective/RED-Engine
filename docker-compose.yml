@@ -23,10 +23,8 @@ services:
     container_name: caddy_proxy
     restart: unless-stopped
     ports:
-      # MODIFIED: Removed port 443 completely. 
-      # Bound port 80 strictly to localhost (127.0.0.1) so no one on your Wi-Fi can access it.
-      # This will access the site locally at http://localhost:8080
-      - "127.0.0.1:8080:80" 
+      - "80:80" 
+      - "443:443"
     networks:
       - clearnet-tier
     volumes:

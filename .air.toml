@@ -1,0 +1,25 @@
+# .air.toml
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/red-engine ./cmd/red/main.go"
+  bin = "./tmp/red-engine"
+  include_ext = ["go", "html", "tmpl"]
+  exclude_dir = ["data", "node_modules", "tmp", "caddy_routing"]
+  delay = 1000
+  stop_on_error = true
+  send_interrupt = true
+  kill_delay = 500
+
+[log]
+  time = true
+
+[color]
+  main = "magenta"
+  watcher = "cyan"
+  build = "yellow"
+  runner = "green"
+
+[misc]
+  clean_on_exit = true

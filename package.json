@@ -1,0 +1,17 @@
+{
+  "name": "red-engine",
+  "version": "1.0.0",
+  "description": "RED Engine with Tailwind CSS",
+  "main": "index.js",
+  "scripts": {
+    "build:tailwind": "tailwindcss -i ./internal/router/static/tailwind-input.css -o ./internal/router/static/tailwind.css --minify",
+    "watch:tailwind": "tailwindcss -i ./internal/router/static/tailwind-input.css -o ./internal/router/static/tailwind.css --watch"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3"
+  },
+  "author": "",
+  "license": "ISC"
+}
