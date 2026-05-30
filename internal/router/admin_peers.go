@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RED-Collective/red-engine/tree/StandardCodebase/internal/registry"
+	"github.com/RED-Collective/red-engine/internal/registry"
 )
 
 type nodeInfoResponse struct {
@@ -19,12 +19,8 @@ type nodeInfoResponse struct {
 	Signature       string   `json:"signature"`
 }
 
-type addPeerRequest struct {
-	URL      string `json:"url"`
-	PeerType string `json:"peer_type"`
-}
-
 func fetchNodeInfo(baseURL string) (*nodeInfoResponse, error) {
+	// Add scheme if missing
 	if !strings.HasPrefix(baseURL, "http://") && !strings.HasPrefix(baseURL, "https://") {
 		baseURL = "https://" + baseURL
 	}
@@ -46,13 +42,17 @@ func fetchNodeInfo(baseURL string) (*nodeInfoResponse, error) {
 		return nil, fmt.Errorf("invalid nodeinfo response: %w", err)
 	}
 
+	// Basic validation
 	if info.PublicKey == "" {
 		return nil, fmt.Errorf("peer did not provide a public key")
 	}
 	if info.Name == "" {
 		info.Name = "Unnamed Node"
 	}
-	return &info, nil
+	
+type addPeerRequest struct {
+	URL      string `json:"url"`
+	PeerType string `json:"peer_type"` // upstream, downstream, mirror
 }
 
 func (h *handler) listPeers(w http.ResponseWriter, r *http.Request) {
@@ -79,11 +79,15 @@ func (h *handler) addPeer(w http.ResponseWriter, r *http.Request) {
 		req.PeerType = "upstream"
 	}
 
+	// Fetch nodeinfo from peer
 	info, err := fetchNodeInfo(req.URL)
 	if err != nil {
 		http.Error(w, "Failed to fetch nodeinfo: "+err.Error(), http.StatusBadGateway)
 		return
 	}
+
+	// Verify signature (optional but recommended)
+	// We'll trust HTTPS for now, but can add verification later.
 
 	peer := registry.Peer{
 		URL:           req.URL,

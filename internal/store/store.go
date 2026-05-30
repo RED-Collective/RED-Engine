@@ -182,7 +182,7 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 
 func (s *Store) loadSecurityData() (map[string]string, map[string]models.ManifestEntry) {
 	trustedKeys := make(map[string]string)
-	
+
 	// FIX: Resolve the trusted keys relative to the data directory's parent (standard repository root)
 	trustPath := filepath.Join(filepath.Dir(s.dataDir), "contributors.json")
 	if _, err := os.Stat(trustPath); os.IsNotExist(err) {

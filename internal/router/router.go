@@ -1,5 +1,3 @@
-// RED ENGINE VERSION
-
 package router
 
 import (
@@ -24,6 +22,14 @@ type handler struct {
 	adminTmpl *template.Template
 	cfg       *config.Config
 	cfgPath   string
+}
+
+func (h *handler) adminOnly(param any) func(http.ResponseWriter, *http.Request) {
+	panic("unimplemented")
+}
+
+func (h *handler) adminOnly(param any) func(http.ResponseWriter, *http.Request) {
+	panic("unimplemented")
 }
 
 func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
@@ -80,6 +86,8 @@ func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
 	mux.HandleFunc("/-/source/", h.source)
 	mux.HandleFunc("/-/download/", h.download)
 	mux.HandleFunc("/-/webhook/sync", h.webhookSync)
+	// NEW: Node information and connections
+	mux.HandleFunc("/-/nodeinfo", h.nodeInfo)
 
 	// Admin UI
 	mux.HandleFunc("/-/admin", h.adminUI)
@@ -87,6 +95,9 @@ func New(s *store.Store, cfg *config.Config, cfgPath string) http.Handler {
 	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
 	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributor))
 	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.deleteContributor))
+	mux.HandleFunc("/-/admin/peers", h.adminOnly(h.listPeers))
+	mux.HandleFunc("/-/admin/peers/add", h.adminOnly(h.addPeer))
+	mux.HandleFunc("/-/admin/peers/delete", h.adminOnly(h.deletePeer))
 	// Secure routes
 	mux.HandleFunc("/-/reload", h.adminOnly(h.reload))
 	mux.HandleFunc("/-/import", h.adminOnly(h.importRemote))

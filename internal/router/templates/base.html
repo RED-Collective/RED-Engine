@@ -13,8 +13,8 @@
     <!-- Fixed Navbar -->
     <nav class="navbar">
         <div class="navbar-container">
-            <a href="/" class="site-title">{{ .Site }}</a>
-            <div class="search-wrapper">
+<a href="/" class="site-title">{{ .Site }}</a>
+<span class="text-xs text-white ml-2 opacity-75">Node: {{ .NodeName }}</span>           <div class="search-wrapper">
                 <input type="text" id="search-input" placeholder="Search..." autocomplete="off">
                 <div id="search-results" class="search-results hidden"></div>
             </div>

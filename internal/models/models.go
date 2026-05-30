@@ -42,6 +42,7 @@ type Crumb struct {
 
 type PageData struct {
 	Site              string
+	NodeName          string // <-- ADD THIS LINE
 	Nav               map[string]*Section
 	Body              template.HTML
 	Title             string

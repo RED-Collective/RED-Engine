@@ -21,6 +21,7 @@ type Config struct {
 	AdminToken    string       `json:"adminToken"`
 	WebhookSecret string       `json:"webhookSecret"`
 	StartupSync   []RemoteSync `json:"startupSync"`
+	NodeName      string       `json:"nodeName"`
 }
 
 func Default() Config {

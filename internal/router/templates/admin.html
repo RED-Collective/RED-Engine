@@ -26,6 +26,20 @@
         <!-- Dashboard View -->
         <div id="dashboard-view" style="display: none;">
             <div class="alert success" style="text-align: center; margin-bottom: 1.5rem;">✓ Authenticated</div>
+<div id="dashboard-view" style="display: none;">
+    <div class="alert success" style="text-align: center; margin-bottom: 1.5rem;">✓ Authenticated</div>
+
+    <!-- === NEW: Node Identity Panel === -->
+    <div class="admin-section">
+        <h2 class="section-title">Node Identity</h2>
+        <div id="node-info" class="form-card">
+            <p><strong>Node Name:</strong> <span id="node-name">Loading...</span></p>
+            <p><strong>Public Key (hex):</strong> <code id="node-pubkey" class="contributor-key">Loading...</code></p>
+            <p><strong>Node Info Endpoint:</strong> <code id="node-endpoint"></code></p>
+            <button id="copy-node-pubkey" class="btn-success" style="margin-top: 0.5rem;">Copy Public Key</button>
+        </div>
+    </div>
+    <!-- ================================= -->
 
             <!-- Contributors Management -->
             <div class="admin-section">
@@ -79,31 +93,33 @@
             }
         }
 
-        async function login() {
-            const tokenInput = document.getElementById("token").value;
-            const statusDiv = document.getElementById("login-status");
-            statusDiv.textContent = "Verifying...";
-            statusDiv.className = "status-message";
-            try {
-                const response = await fetch("/-/admin/config", {
-                    headers: { "X-Admin-Token": tokenInput },
-                });
-                if (response.ok) {
-                    sessionToken = tokenInput;
-                    document.getElementById("login-view").style.display = "none";
-                    document.getElementById("dashboard-view").style.display = "block";
-                    const data = await response.json();
-                    renderList(data);
-                    loadContributors();
-                } else {
-                    statusDiv.textContent = "Error: Invalid Admin Token!";
-                    statusDiv.classList.add("error");
-                }
-            } catch (err) {
-                statusDiv.textContent = "Server communication failure. Check terminal logs.";
-                statusDiv.classList.add("error");
-            }
+async function login() {
+    const tokenInput = document.getElementById("token").value;
+    const statusDiv = document.getElementById("login-status");
+    statusDiv.textContent = "Verifying...";
+    statusDiv.className = "status-message";
+    try {
+        const response = await fetch("/-/admin/config", {
+            headers: { "X-Admin-Token": tokenInput },
+        });
+        if (response.ok) {
+            sessionToken = tokenInput;
+            document.getElementById("login-view").style.display = "none";
+            document.getElementById("dashboard-view").style.display = "block";
+            const data = await response.json();
+            renderList(data);
+            loadContributors();
+            loadNodeInfo();                 // <-- ADD THIS
+            document.getElementById('copy-node-pubkey').onclick = copyNodePubkey; // <-- ADD THIS
+        } else {
+            statusDiv.textContent = "Error: Invalid Admin Token!";
+            statusDiv.classList.add("error");
         }
+    } catch (err) {
+        statusDiv.textContent = "Server communication failure. Check terminal logs.";
+        statusDiv.classList.add("error");
+    }
+}
 
         function renderList(syncArray) {
             const list = document.getElementById("sync-list");
@@ -304,6 +320,54 @@
                 return m;
             });
         }
+
+        // Load node info from /-/nodeinfo
+async function loadNodeInfo() {
+    try {
+        const response = await fetch('/-/nodeinfo');
+        if (response.ok) {
+            const info = await response.json();
+            document.getElementById('node-name').textContent = info.name || 'Unnamed Node';
+            document.getElementById('node-pubkey').textContent = info.public_key || 'N/A';
+            document.getElementById('node-endpoint').textContent = window.location.origin + '/-/nodeinfo';
+        } else {
+            document.getElementById('node-name').textContent = 'Failed to load';
+            document.getElementById('node-pubkey').textContent = 'Error';
+        }
+    } catch (err) {
+        console.error('Failed to fetch node info', err);
+        document.getElementById('node-name').textContent = 'Error loading';
+    }
+}
+
+// Copy public key to clipboard
+function copyNodePubkey() {
+    const pubkey = document.getElementById('node-pubkey').textContent;
+    if (pubkey && pubkey !== 'Loading...') {
+        navigator.clipboard.writeText(pubkey).then(() => {
+            alert('Public key copied to clipboard!');
+        }).catch(() => {
+            alert('Failed to copy');
+        });
+    }
+}
+<!-- Peer Management -->
+<div class="admin-section">
+    <h2 class="section-title">Peer Nodes</h2>
+    <div id="peers-list" class="peers-list"></div>
+    <div class="form-card">
+        <label class="admin-label">Peer URL (e.g., https://node.example.com)</label>
+        <input type="text" id="peer-url" placeholder="https://..." class="admin-input">
+        <label class="admin-label mt-3">Peer Type</label>
+        <select id="peer-type" class="admin-input">
+            <option value="upstream">Upstream (sync from)</option>
+            <option value="downstream">Downstream (sync to)</option>
+            <option value="mirror">Mirror (bidirectional)</option>
+        </select>
+        <button class="btn-success" onclick="addPeer()">Add Peer</button>
+        <div id="peer-status" class="status-message"></div>
+    </div>
+</div>
     </script>
 </body>
 </html>

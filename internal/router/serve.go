@@ -35,10 +35,11 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d := models.PageData{
-		Site:   h.cfg.SiteName,
-		Nav:    h.store.Root(),
-		Path:   path,
-		TopCat: topCat,
+		Site:     h.cfg.SiteName,
+		NodeName: h.cfg.NodeName,
+		Nav:      h.store.Root(),
+		Path:     path,
+		TopCat:   topCat,
 	}
 
 	switch {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/RED-Collective/red-engine/internal/config"
 	"github.com/RED-Collective/red-engine/internal/fetch"
+	"github.com/RED-Collective/red-engine/internal/node"
 	"github.com/RED-Collective/red-engine/internal/router"
 	"github.com/RED-Collective/red-engine/internal/store"
 )
@@ -27,6 +28,10 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		cfg = loaded
+	}
+
+	if err := node.InitNodeIdentity(); err != nil {
+		log.Fatalf("Failed to initialise node identity: %v", err)
 	}
 
 	if cfg.AdminToken == "" || cfg.AdminToken == "secret123" {
