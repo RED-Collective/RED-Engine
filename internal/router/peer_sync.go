@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -48,6 +49,15 @@ func (h *handler) pullFromPeer(peerURL, remotePath, destDir string) error {
 
 	// 4. Download every file listed in the manifest
 	for relPath := range manifest.Files {
+		// Guard against path traversal: a malicious or buggy manifest could
+		// list relPath values like "../../etc/cron.d/x" that escape destDir.
+		clean := filepath.ToSlash(filepath.Clean(relPath))
+		if clean == "" || clean == "." || clean == ".." ||
+			strings.HasPrefix(clean, "../") || filepath.IsAbs(clean) {
+			log.Printf("pullFromPeer: skipping unsafe path %q", relPath)
+			continue
+		}
+
 		fileURL := peerURL + "/content/" + remotePath + "/" + relPath
 		fileResp, err := http.Get(fileURL)
 		if err != nil {
@@ -58,7 +68,7 @@ func (h *handler) pullFromPeer(peerURL, remotePath, destDir string) error {
 			return fmt.Errorf("file %s returned HTTP %d", relPath, fileResp.StatusCode)
 		}
 
-		localPath := filepath.Join(destDir, relPath)
+		localPath := filepath.Join(destDir, clean)
 		if err := os.MkdirAll(filepath.Dir(localPath), 0755); err != nil {
 			return err
 		}

@@ -63,7 +63,13 @@ func main() {
 		log.Println("  Set RED_ADMIN_TOKEN env var or add adminToken to config.json to restore access.")
 	}
 
-	if err := registry.InitRegistry(cfg.DataDir); err != nil {
+	// registry.db holds private state (peers, tokens, trusted authors) and must
+	// not sit inside DataDir, which is served and synced as public content.
+	stateDir := cfg.ResolvedStateDir()
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		log.Fatalf("Failed to create state dir %s: %v", stateDir, err)
+	}
+	if err := registry.InitRegistry(stateDir); err != nil {
 		log.Fatalf("Failed to initialise registry: %v", err)
 	}
 
