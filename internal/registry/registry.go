@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/RED-Collective/red-engine/internal/taxonomy"
 	_ "modernc.org/sqlite"
 )
 
@@ -67,6 +69,10 @@ func InitRegistry(dataDir string) error {
 			return
 		}
 		initErr = migrate(db)
+		if initErr != nil {
+			return
+		}
+		initErr = seedTaxonomy(db)
 	})
 	return initErr
 }
@@ -131,6 +137,11 @@ func migrate(db *sql.DB) error {
 
 	// Auxiliary tables introduced in v2 (safe to create any time).
 	if err := createAuxTables(db); err != nil {
+		return err
+	}
+
+	// Taxonomy, manual tags, content index, and full-text search.
+	if err := createTaxonomyTables(db); err != nil {
 		return err
 	}
 
@@ -227,6 +238,202 @@ func createAuxTables(e execer) error {
 			PRIMARY KEY (folder_id, tag_id)
 		);
 	`)
+	return err
+}
+
+// createTaxonomyTables creates the fixed-taxonomy, manual-tag, content-index,
+// and full-text-search tables. content_fts is a standalone FTS5 table (not an
+// external-content table): the content indexer owns its rows directly, so there
+// are deliberately no sync triggers here.
+func createTaxonomyTables(e execer) error {
+	_, err := e.Exec(`
+		CREATE TABLE IF NOT EXISTS taxonomy (
+			uid        TEXT    PRIMARY KEY,           -- stable federation id: 'c<id>' core, 'u<hash>' community
+			id         INTEGER,                       -- permanent integer (core nodes only)
+			name       TEXT    NOT NULL,
+			slug       TEXT    NOT NULL,
+			parent_uid TEXT    REFERENCES taxonomy(uid),
+			depth      INTEGER NOT NULL DEFAULT 0,
+			source     TEXT    NOT NULL DEFAULT 'core'
+			                   CHECK(source IN ('core','community')),
+			created_by TEXT,                          -- author pubkey (community)
+			signature  TEXT,                          -- ed25519 over the canonical record (community)
+			created_at INTEGER,
+			verified   BOOLEAN NOT NULL DEFAULT 0,    -- core=1; community=1 when signer is a trusted author
+			UNIQUE(parent_uid, slug)
+		);
+		CREATE INDEX IF NOT EXISTS idx_taxonomy_parent ON taxonomy(parent_uid);
+
+		CREATE TABLE IF NOT EXISTS manual_tags (
+			id   INTEGER PRIMARY KEY,
+			name TEXT    NOT NULL UNIQUE
+		);
+
+		CREATE TABLE IF NOT EXISTS content_index (
+			id            INTEGER PRIMARY KEY,
+			path          TEXT    UNIQUE NOT NULL,
+			title         TEXT    NOT NULL DEFAULT '',
+			content_type  TEXT    NOT NULL DEFAULT 'unknown'
+			                      CHECK(content_type IN ('library','manual','unknown')),
+			taxonomy_uid  TEXT    REFERENCES taxonomy(uid),
+			guide_name    TEXT,
+			guide_order   INTEGER,
+			tag1_id       INTEGER REFERENCES manual_tags(id),
+			tag2_id       INTEGER REFERENCES manual_tags(id),
+			author_pubkey TEXT,
+			author_name   TEXT,
+			verified      BOOLEAN NOT NULL DEFAULT 0,
+			file_hash     TEXT,
+			signed_at     INTEGER,
+			indexed_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_ci_taxonomy ON content_index(taxonomy_uid);
+		CREATE INDEX IF NOT EXISTS idx_ci_guide    ON content_index(guide_name, guide_order);
+		CREATE INDEX IF NOT EXISTS idx_ci_author   ON content_index(author_pubkey);
+		CREATE INDEX IF NOT EXISTS idx_ci_type     ON content_index(content_type, verified);
+		CREATE INDEX IF NOT EXISTS idx_ci_tags     ON content_index(tag1_id, tag2_id);
+		CREATE INDEX IF NOT EXISTS idx_ci_hash     ON content_index(file_hash);
+
+		CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
+			path UNINDEXED,
+			title,
+			body,
+			author_name,
+			tokenize='porter ascii'
+		);
+	`)
+	return err
+}
+
+// seedTaxonomy populates the curated (source='core') taxonomy and manual_tags
+// from the embedded JSON. Core nodes are keyed by the permanent UID 'c<id>', so
+// the upsert is safe to run on every startup: new nodes are added and renames /
+// restructures propagate, while community rows (different UIDs) are untouched.
+func seedTaxonomy(db *sql.DB) error {
+	tree, err := taxonomy.Tree()
+	if err != nil {
+		return fmt.Errorf("load taxonomy tree: %w", err)
+	}
+	tags, err := taxonomy.Tags()
+	if err != nil {
+		return fmt.Errorf("load manual tags: %w", err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var insertNode func(n taxonomy.Node, parentUID string, depth int) error
+	insertNode = func(n taxonomy.Node, parentUID string, depth int) error {
+		var parent any
+		if parentUID != "" {
+			parent = parentUID
+		}
+		if _, err := tx.Exec(`
+			INSERT INTO taxonomy (uid, id, name, slug, parent_uid, depth, source, verified)
+			VALUES (?, ?, ?, ?, ?, ?, 'core', 1)
+			ON CONFLICT(uid) DO UPDATE SET
+				name=excluded.name, slug=excluded.slug,
+				parent_uid=excluded.parent_uid, depth=excluded.depth`,
+			taxonomy.CoreUID(n.ID), n.ID, n.Name, n.Slug, parent, depth); err != nil {
+			return err
+		}
+		for _, c := range n.Children {
+			if err := insertNode(c, taxonomy.CoreUID(n.ID), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, root := range tree {
+		if err := insertNode(root, "", 0); err != nil {
+			return err
+		}
+	}
+
+	for _, t := range tags {
+		if _, err := tx.Exec(`
+			INSERT INTO manual_tags (id, name) VALUES (?, ?)
+			ON CONFLICT(id) DO UPDATE SET name=excluded.name`, t.ID, t.Name); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// TaxonomyNode is one taxonomy entry, used for ancestor breadcrumbs.
+type TaxonomyNode struct {
+	UID   string `json:"uid"`
+	Name  string `json:"name"`
+	Slug  string `json:"slug"`
+	Depth int    `json:"depth"`
+}
+
+// TaxonomyPath returns the ancestor chain from root to the given uid, ordered
+// root-first (e.g. Applied Sciences -> Engineering -> ... -> CPU Design). It
+// returns an empty slice if the uid is unknown. It walks both curated and
+// community nodes, since both live in the same table linked by parent_uid.
+func TaxonomyPath(uid string) ([]TaxonomyNode, error) {
+	rows, err := db.Query(`
+		WITH RECURSIVE path(uid, name, slug, parent_uid, depth) AS (
+			SELECT uid, name, slug, parent_uid, depth FROM taxonomy WHERE uid = ?
+			UNION ALL
+			SELECT t.uid, t.name, t.slug, t.parent_uid, t.depth
+			FROM taxonomy t JOIN path p ON t.uid = p.parent_uid
+		)
+		SELECT uid, name, slug, depth FROM path ORDER BY depth ASC
+	`, uid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TaxonomyNode
+	for rows.Next() {
+		var n TaxonomyNode
+		if err := rows.Scan(&n.UID, &n.Name, &n.Slug, &n.Depth); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
+}
+
+// CommunityBranch is a user-created taxonomy node (source='community'). Its UID
+// is deterministic (taxonomy.CommunityUID of parent+slug) so the same branch
+// created on different nodes converges instead of duplicating.
+type CommunityBranch struct {
+	UID       string
+	ParentUID string
+	Slug      string
+	Name      string
+	CreatedBy string // author pubkey (hex)
+	Signature string // hex ed25519 over the canonical record
+	CreatedAt int64  // unix seconds
+	Verified  bool   // signer is a trusted author
+}
+
+// InsertCommunityBranch stores a user-created branch under an existing parent.
+// It is idempotent by UID, so a branch arriving from several peers (identical
+// deterministic UID) merges rather than duplicating. depth is derived from the
+// parent. Signature verification is performed by the caller before storage.
+func InsertCommunityBranch(b CommunityBranch) error {
+	var parentDepth int
+	err := db.QueryRow(`SELECT depth FROM taxonomy WHERE uid = ?`, b.ParentUID).Scan(&parentDepth)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("parent branch %q does not exist", b.ParentUID)
+	}
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(`
+		INSERT OR IGNORE INTO taxonomy
+			(uid, id, name, slug, parent_uid, depth, source, created_by, signature, created_at, verified)
+		VALUES (?, NULL, ?, ?, ?, ?, 'community', ?, ?, ?, ?)`,
+		b.UID, b.Name, b.Slug, b.ParentUID, parentDepth+1,
+		b.CreatedBy, b.Signature, b.CreatedAt, b.Verified)
 	return err
 }
 
