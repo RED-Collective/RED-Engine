@@ -38,3 +38,15 @@ Thumbs.db
 # local two-node demo (scripts/two-node.sh)
 .red-demo/
 /red
+
+# Node / frontend packages
+
+**/**/node_modules
+
+# podman
+
+venv-podman
+
+# Red Project Related
+
+config.json

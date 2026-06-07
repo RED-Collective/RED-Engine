@@ -1,29 +1,3 @@
 {
-  "name": "red-engine",
-  "version": "1.0.0",
-  "description": "RED Engine with Tailwind CSS",
-  "main": "index.js",
-  "scripts": {
-    "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
-    "typecheck": "vue-tsc --noEmit",
-    "build:tailwind": "tailwindcss -i ./internal/router/static/tailwind-input.css -o ./internal/router/static/tailwind.css --minify",
-    "watch:tailwind": "tailwindcss -i ./internal/router/static/tailwind-input.css -o ./internal/router/static/tailwind.css --watch"
-  },
-  "dependencies": {
-    "vue": "^3.5.0",
-    "vue-router": "^4.5.0"
-  },
-  "devDependencies": {
-    "@tailwindcss/vite": "^4.3.0",
-    "@vitejs/plugin-vue": "^5.2.0",
-    "autoprefixer": "^10.4.19",
-    "postcss": "^8.4.38",
-    "tailwindcss": "^4.3.0",
-    "typescript": "^5.7.0",
-    "vite": "^8.0.16",
-    "vue-tsc": "^2.2.0"
-  },
-  "author": "",
-  "license": "ISC"
+  "packageManager": "pnpm@11.5.2+sha512.71c631e382066efc25625d5cf029075de07b61b37f6e27350fbd84b1bda5864c8c1967adc280776b45c30a715c0359a3be08fef42d5bb09e2b99029979692916"
 }
