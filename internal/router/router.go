@@ -33,6 +33,9 @@ type handler struct {
 	cfg         *config.Config
 	navService  *navigation.Service
 	devMode     bool
+	// webFS is the active compiled-frontend source served at /, or nil to fall
+	// back to the legacy Go templates. See frontend.go.
+	webFS http.FileSystem
 }
 
 var tmplFuncs = template.FuncMap{
@@ -118,15 +121,39 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 		}
 	}
 
-	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(staticFS)))
-
-	// Serve Vite-built SPA assets (index.html references /assets/... at root level)
-	if distFS, err := fs.Sub(files, "static/dist"); err == nil {
-		mux.Handle("/assets/", http.FileServer(http.FS(distFS)))
+	// Resolve the active compiled-frontend source, in priority order:
+	//   1. RED_WEB_DIR on the filesystem (drop in any build, no recompile);
+	//   2. the binary's embedded static/dist;
+	//   3. none — the legacy Go templates render instead.
+	// The chosen source must contain an index.html to count as present.
+	if cfg.WebDir != "" {
+		if _, err := os.Stat(filepath.Join(cfg.WebDir, "index.html")); err == nil {
+			h.webFS = http.Dir(cfg.WebDir)
+			log.Printf("[Frontend] Serving UI from RED_WEB_DIR=%s", cfg.WebDir)
+		} else {
+			log.Printf("[Frontend] RED_WEB_DIR=%s has no index.html; ignoring", cfg.WebDir)
+		}
+	}
+	if h.webFS == nil {
+		if distFS, err := fs.Sub(files, "static/dist"); err == nil {
+			if _, err := fs.Stat(distFS, "index.html"); err == nil {
+				h.webFS = http.FS(distFS)
+			}
+		}
 	}
 
-	mux.HandleFunc("/", h.spaIndex)
+	mux := http.NewServeMux()
+
+	// When a compiled frontend is active it owns every non-API path (including
+	// its own /assets, /static, etc.) via the catch-all. Only when there is no
+	// frontend do we expose the embedded /static/ assets the legacy templates use.
+	if h.webFS == nil {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(staticFS)))
+	}
+
+	// Catch-all: serve the built UI (or legacy templates). Explicit client-side
+	// routes resolve to the app shell so deep links / refreshes work.
+	mux.HandleFunc("/", h.frontend)
 	mux.HandleFunc("/-/health", h.health)
 	mux.HandleFunc("/-/manifest", h.manifest)
 	mux.HandleFunc("/-/search-index.json", h.searchIndex)
@@ -134,25 +161,24 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	mux.HandleFunc("/-/download/", h.download)
 	mux.HandleFunc("/-/webhook/sync", h.webhookSync)
 	mux.HandleFunc("/-/nodeinfo", h.nodeInfo)
-	// /-/nodes is now a React SPA route; serve the shell so direct visits and
+	// /-/nodes is a client-side route; serve the app shell so direct visits and
 	// refreshes render client-side. The JSON it consumes lives at /-/peers and
 	// /-/nodeinfo (registered separately, untouched).
-	mux.HandleFunc("/-/nodes", h.spaIndex)
+	mux.HandleFunc("/-/nodes", h.appShell)
 	mux.HandleFunc("/-/peers", h.publicPeers)
 	mux.HandleFunc("/-/announce/challenge", h.announceChallenge)
 	mux.HandleFunc("/-/announce/confirm", h.announceConfirm)
+	mux.HandleFunc("/-/sync/verify", h.syncVerify)
 	mux.HandleFunc("/-/branch-meta/", h.branchMeta)
 	mux.HandleFunc("/-/assets/", h.assetFile)
-	mux.Handle("/content/", http.StripPrefix("/content/", http.FileServer(http.Dir(h.store.DataDir()))))
+	contentFS := http.StripPrefix("/content/", http.FileServer(http.Dir(h.store.DataDir())))
+	mux.Handle("/content/", h.contentWithManifest(contentFS))
 
-	// /-/admin (exact path) is the React SPA route; subpaths below remain the
+	// /-/admin (exact path) is a client-side route; subpaths below remain the
 	// real admin JSON API. ServeMux matches /-/admin exactly, so /-/admin/* are
 	// unaffected.
-	mux.HandleFunc("/-/admin", h.spaIndex)
+	mux.HandleFunc("/-/admin", h.appShell)
 	mux.HandleFunc("/-/admin/peers/health", h.adminOnly(h.checkPeerHealthHandler))
-	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
-	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributorToDB))
-	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.revokeContributor))
 	mux.HandleFunc("/-/admin/peers", h.adminOnly(h.listPeers))
 	mux.HandleFunc("/-/admin/peers/refresh", h.adminOnly(h.refreshPeer))
 	mux.HandleFunc("/-/admin/peers/add", h.adminOnly(h.addPeer))
@@ -161,17 +187,25 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	mux.HandleFunc("/-/import", h.adminOnly(h.importRemote))
 	mux.HandleFunc("/-/admin/config", h.adminOnly(h.adminConfig))
 	mux.HandleFunc("/-/admin/remove", h.adminOnly(h.adminRemove))
-	// Navigation API
+	// Contributor keyring: the recognized signer keys that make a valid signature
+	// read as "verified" rather than "unverified".
+	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
+	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributorToDB))
+	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.revokeContributor))
+	// JSON API consumed by the frontend. GET /api is a self-describing catalog.
+	mux.HandleFunc("/api", h.apiIndex)
 	mux.HandleFunc("/api/navigation", h.navAPI)
+	mux.HandleFunc("/api/tags", h.tagsAPI)
 	mux.HandleFunc("/-/admin/navigation/rescan", h.adminOnly(h.navRescan))
 	mux.HandleFunc("/-/admin/navigation/folder/description", h.adminOnly(h.navFolderDescription))
 
-	// React SPA JSON APIs
 	mux.HandleFunc("/api/content", h.contentAPI)
 	mux.HandleFunc("/api/recent-files", h.recentFiles)
 	mux.HandleFunc("/-/admin/verify", h.adminOnly(h.adminVerify))
 
-	return mux
+	// CORS wrapping lets a frontend on another origin (e.g. a Vite dev server)
+	// call the API when RED_CORS_ORIGINS is set; otherwise it is a no-op.
+	return corsMiddleware(cfg.CORSOrigins, mux)
 }
 
 func (h *handler) adminOnly(next http.HandlerFunc) http.HandlerFunc {
@@ -241,28 +275,14 @@ func (h *handler) branchMeta(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filePath)
 }
 
-// assetFile serves inline images embedded in markdown articles.
-// URL: /-/assets/{dirPath}/{filename}
-// Maps to: data/{dirPath}/.assets/{filename}
-// spaIndex serves the React SPA shell (static/dist/index.html) for all browser-navigation paths.
-// In dev mode with no built dist, it falls back to the legacy Go template renderer.
-func (h *handler) spaIndex(w http.ResponseWriter, r *http.Request) {
-	content, err := files.ReadFile("static/dist/index.html")
-	if err != nil {
-		// SPA not built yet — fall back to Go templates so the server is usable
-		// without running npm run build first (e.g. during backend-only development).
-		h.serve(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(content)
-}
-
 func (h *handler) adminVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+// assetFile serves inline images embedded in markdown articles.
+// URL: /-/assets/{dirPath}/{filename}
+// Maps to: data/{dirPath}/.assets/{filename}
 func (h *handler) assetFile(w http.ResponseWriter, r *http.Request) {
 	suffix := strings.TrimPrefix(r.URL.Path, "/-/assets/")
 	if strings.Contains(suffix, "..") {

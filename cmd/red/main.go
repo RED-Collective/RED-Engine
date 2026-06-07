@@ -19,7 +19,6 @@ import (
 )
 
 func main() {
-
 	cfgPath := flag.String("config", "config.json", "path to config file")
 	flag.Parse()
 
@@ -44,6 +43,11 @@ func main() {
 	if v := os.Getenv("RED_DATA_DIR"); v != "" {
 		cfg.DataDir = v
 	}
+	// StateDir holds the node identity + registry.db; two local nodes must not
+	// share it, so allow an env override (config.json sets no field by default).
+	if v := os.Getenv("RED_STATE_DIR"); v != "" {
+		cfg.StateDir = v
+	}
 	if v := os.Getenv("RED_ADMIN_TOKEN"); v != "" {
 		cfg.AdminToken = v
 	}
@@ -56,6 +60,14 @@ func main() {
 	}
 	if v := os.Getenv("RED_NODE_NAME"); v != "" && cfg.NodeName == "" {
 		cfg.NodeName = v
+	}
+	// Frontend hosting: point the server at a built UI directory and/or allow a
+	// cross-origin dev server to call the API.
+	if v := os.Getenv("RED_WEB_DIR"); v != "" {
+		cfg.WebDir = v
+	}
+	if v := os.Getenv("RED_CORS_ORIGINS"); v != "" {
+		cfg.CORSOrigins = v
 	}
 
 	if cfg.AdminToken == "" {
@@ -76,7 +88,7 @@ func main() {
 	// Load (or generate) this node's Ed25519 identity. The public key is the
 	// stable anchor used for federation and the challenge-response handshake;
 	// without this, GetNodePublicKey/SignNodeInfo would have no key to use.
-	if err := node.InitNodeIdentity(); err != nil {
+	if err := node.InitNodeIdentity(stateDir); err != nil {
 		log.Fatalf("Failed to initialise node identity: %v", err)
 	}
 
@@ -121,6 +133,10 @@ func main() {
 				log.Printf("Migrated %s=%q to database", m.key, m.val)
 			}
 		}
+	}
+
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		log.Fatalf("Failed to create data dir %s: %v", cfg.DataDir, err)
 	}
 
 	s := store.New(cfg.DataDir)

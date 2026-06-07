@@ -88,7 +88,7 @@ func (h *handler) serve(w http.ResponseWriter, r *http.Request) {
 			d.Title = art.Title
 			d.Body = art.Body
 			d.Verified = art.Verified
-			d.Author = art.Author
+			d.SignerKey = art.SignerKey
 			d.Hash = art.Hash
 			d.VerificationError = art.VerificationError
 			d.VerificationState = art.VerificationState
@@ -279,8 +279,10 @@ func (h *handler) contentAPI(w http.ResponseWriter, r *http.Request) {
 		Title             string      `json:"title"`
 		BodyHTML          string      `json:"body_html"`
 		VerificationState string      `json:"verification_state"`
-		Author            string      `json:"author"`
+		VerificationError string      `json:"verification_error,omitempty"`
+		SignerKey         string      `json:"signer_key,omitempty"`
 		Hash              string      `json:"hash"`
+		Tags              []string    `json:"tags,omitempty"`
 		Crumb             []crumbJSON `json:"crumb"`
 		PrevArticle       *articleRef `json:"prev_article"`
 		NextArticle       *articleRef `json:"next_article"`
@@ -298,8 +300,10 @@ func (h *handler) contentAPI(w http.ResponseWriter, r *http.Request) {
 		Title:             title,
 		BodyHTML:          bodyStr,
 		VerificationState: art.VerificationState,
-		Author:            art.Author,
+		VerificationError: art.VerificationError,
+		SignerKey:         art.SignerKey,
 		Hash:              art.Hash,
+		Tags:              art.Tags,
 		IsDirectory:       isDirectory,
 		Crumb:             make([]crumbJSON, 0, len(crumbs)),
 	}

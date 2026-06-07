@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import type { NavNode, RecentFile, NodeInfo } from '../types/api'
+import type { NavNode, RecentFile, NodeInfo, TagCount } from '../types/api'
 import { fetchTopLevel } from '../api/navigation'
 import { fetchRecentFiles } from '../api/content'
 import { fetchNodeInfo } from '../api/node'
+import { fetchTags } from '../api/tags'
 import { describe } from '../lib/branding'
 import SectionCard from '../components/SectionCard.vue'
 import ArticleListItem from '../components/ArticleListItem.vue'
@@ -11,15 +12,18 @@ import ArticleListItem from '../components/ArticleListItem.vue'
 const sections = ref<NavNode[]>([])
 const recent = ref<RecentFile[]>([])
 const nodeInfo = ref<NodeInfo | null>(null)
+// Top tags shown as a teaser cloud on the home page; full list lives at /tags.
+const tags = ref<TagCount[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 
 onMounted(async () => {
   try {
-    const [secs, files, info] = await Promise.allSettled([
+    const [secs, files, info, tagList] = await Promise.allSettled([
       fetchTopLevel(),
       fetchRecentFiles(5),
       fetchNodeInfo(),
+      fetchTags(),
     ])
     if (secs.status === 'fulfilled') {
       // /api/navigation (no path) returns ALL nodes flat, including nested ones.
@@ -28,6 +32,7 @@ onMounted(async () => {
     }
     if (files.status === 'fulfilled') recent.value = files.value
     if (info.status === 'fulfilled') nodeInfo.value = info.value
+    if (tagList.status === 'fulfilled') tags.value = tagList.value.slice(0, 20)
     if (secs.status === 'rejected') error.value = 'Failed to load navigation.'
   } finally {
     loading.value = false
@@ -53,11 +58,30 @@ onMounted(async () => {
     <p v-if="loading" class="text-ink-muted">Loading&hellip;</p>
     <p v-else-if="error" class="text-imperial">{{ error }}</p>
 
-    <!-- Branches -->
+    <!-- Collections -->
     <section v-if="sections.length">
-      <h2 class="mb-4 font-serif text-2xl font-bold text-ink">Branches</h2>
+      <h2 class="mb-4 font-serif text-2xl font-bold text-ink">Collections</h2>
       <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
         <SectionCard v-for="s in sections" :key="s.path" :node="s" />
+      </div>
+    </section>
+
+    <!-- Tags -->
+    <section v-if="tags.length">
+      <div class="mb-4 flex items-baseline justify-between">
+        <h2 class="font-serif text-2xl font-bold text-ink">Tags</h2>
+        <RouterLink to="/tags" class="text-sm text-imperial hover:underline">Browse all &rarr;</RouterLink>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <RouterLink
+          v-for="t in tags"
+          :key="t.name"
+          :to="`/tags/${encodeURIComponent(t.name)}`"
+          class="inline-flex items-center gap-1 rounded-full border border-line bg-white px-3 py-1 text-sm text-ink no-underline transition-colors hover:border-imperial/40 hover:bg-imperial-soft/40 hover:text-imperial"
+        >
+          <span class="text-imperial/70">#</span>{{ t.name }}
+          <span class="text-xs text-ink-muted">{{ t.count }}</span>
+        </RouterLink>
       </div>
     </section>
 

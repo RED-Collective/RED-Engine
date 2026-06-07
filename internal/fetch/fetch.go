@@ -15,6 +15,15 @@ import (
 	"time"
 )
 
+// AllowPrivateSync reports whether loopback / RFC1918 sync + import targets are
+// permitted. It is OFF by default; set RED_ALLOW_PRIVATE_SYNC=true ONLY for
+// local-dev federation testing on a trusted LAN (e.g. two nodes at
+// 192.168.x.y:<port>). The cloud-metadata range (169.254.0.0/16) and multicast
+// stay blocked regardless, so this never re-opens the metadata-SSRF hole.
+func AllowPrivateSync() bool {
+	return os.Getenv("RED_ALLOW_PRIVATE_SYNC") == "true"
+}
+
 // SafeClient creates an HTTP client that mitigates DNS Rebinding SSRF
 func SafeClient() *http.Client {
 	return &http.Client{
@@ -31,7 +40,14 @@ func SafeClient() *http.Client {
 				}
 
 				for _, ip := range ips {
-					if ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsLinkLocalUnicast() || ip.IP.IsMulticast() || ip.IP.IsUnspecified() {
+					// Link-local (incl. the 169.254.169.254 cloud-metadata range) and
+					// multicast are ALWAYS blocked, even in local-dev mode.
+					if ip.IP.IsLinkLocalUnicast() || ip.IP.IsMulticast() {
+						return nil, fmt.Errorf("SSRF Blocked: forbidden IP %s", ip.IP)
+					}
+					// Loopback / RFC1918 / unspecified are blocked unless local-dev
+					// federation testing is explicitly enabled (see AllowPrivateSync).
+					if !AllowPrivateSync() && (ip.IP.IsLoopback() || ip.IP.IsPrivate() || ip.IP.IsUnspecified()) {
 						return nil, fmt.Errorf("SSRF Blocked: forbidden IP %s", ip.IP)
 					}
 				}

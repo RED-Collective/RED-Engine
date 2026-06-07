@@ -7,76 +7,71 @@ import (
 	"path/filepath"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 )
 
+// pullGit syncs a git vault and mirrors it under destDir. The pristine checkout is
+// kept in a hidden sibling cache dir so incremental pulls keep working, while the
+// served tree under destDir is a verbatim copy of the vault's own folders, written
+// by OrganizeVault. It always returns a nil changed-file list, which signals the
+// caller to do a full reload (the whole tree may have been rewritten).
 func pullGit(url, destDir string) ([]string, error) {
-	repo, err := git.PlainOpen(destDir)
+	cacheDir := gitCacheDir(destDir)
+	if err := syncGitCache(url, cacheDir); err != nil {
+		return nil, err
+	}
+	// destDir's base is the source key: it names the top-level content folder and
+	// keys the sync ledger (it is the stable startup_sync Filename, shared across
+	// every re-sync of this URL).
+	dataDir := filepath.Dir(destDir)
+	source := filepath.Base(destDir)
+	if err := OrganizeVault(cacheDir, dataDir, source); err != nil {
+		return nil, fmt.Errorf("organize vault %s: %w", destDir, err)
+	}
+	return nil, nil
+}
+
+// gitCacheDir returns the hidden directory that holds the pristine git checkout
+// for a vault served at destDir. It is a dot-prefixed sibling so the store's
+// reload and the navigation scanner (both of which skip dot-directories) never
+// index the unorganized source files.
+func gitCacheDir(destDir string) string {
+	return filepath.Join(filepath.Dir(destDir), "."+filepath.Base(destDir)+".gitsrc")
+}
+
+// syncGitCache clones the repository into cacheDir, or pulls delta updates if it
+// already exists. A corrupted/missing checkout is rebuilt from scratch.
+func syncGitCache(url, cacheDir string) error {
+	repo, err := git.PlainOpen(cacheDir)
 	if err != nil {
 		if err == git.ErrRepositoryNotExists {
-			log.Printf("📥 Native go-git: Repository missing or corrupted. Rebuilding %s...", destDir)
-
-			// FIX: Destroy any leftover garbage folders from old zip syncs so git can clone cleanly
-			os.RemoveAll(destDir)
-
-			if err := os.MkdirAll(destDir, 0755); err != nil {
-				return nil, err
+			log.Printf("📥 Native go-git: Cloning %s into cache %s...", url, cacheDir)
+			os.RemoveAll(cacheDir) // clear any leftover garbage so clone is clean
+			if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+				return err
 			}
-			_, err = git.PlainClone(destDir, false, &git.CloneOptions{
+			if _, err := git.PlainClone(cacheDir, false, &git.CloneOptions{
 				URL:      url,
 				Progress: os.Stdout,
-			})
-			if err != nil {
-				return nil, fmt.Errorf("go-git clone failed: %v", err)
+			}); err != nil {
+				return fmt.Errorf("go-git clone failed: %v", err)
 			}
-			return nil, nil // Tells the router to do a full memory reload
+			return nil
 		}
-		return nil, fmt.Errorf("failed to check existing repository: %v", err)
+		return fmt.Errorf("failed to check existing repository: %v", err)
 	}
 
-	log.Printf("🔄 Native go-git: Checking for delta updates at %s...", destDir)
+	log.Printf("🔄 Native go-git: Pulling delta updates into cache %s...", cacheDir)
 	worktree, err := repo.Worktree()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get git worktree: %v", err)
+		return fmt.Errorf("failed to get git worktree: %v", err)
 	}
-
-	var oldHash plumbing.Hash
-	if head, err := repo.Head(); err == nil {
-		oldHash = head.Hash()
-	}
-
 	err = worktree.Pull(&git.PullOptions{
 		RemoteName: "origin",
 		Force:      true,
 		Progress:   os.Stdout,
 	})
-
-	if err != nil {
-		if err == git.NoErrAlreadyUpToDate {
-			log.Printf("✅ Sync skipped: %s is already up to date.", destDir)
-			return []string{}, nil
-		}
-		return nil, fmt.Errorf("go-git delta pull failed: %v", err)
+	if err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("go-git delta pull failed: %v", err)
 	}
-
-	var changedFiles []string
-	if head, err := repo.Head(); err == nil {
-		newHash := head.Hash()
-		if oldHash != plumbing.ZeroHash && oldHash != newHash {
-			oldCommit, err1 := repo.CommitObject(oldHash)
-			newCommit, err2 := repo.CommitObject(newHash)
-			if err1 == nil && err2 == nil {
-				patch, err3 := oldCommit.Patch(newCommit)
-				if err3 == nil {
-					for _, fileStat := range patch.Stats() {
-						fullPath := filepath.Join(destDir, fileStat.Name)
-						changedFiles = append(changedFiles, fullPath)
-					}
-				}
-			}
-		}
-	}
-
-	log.Printf("✅ Native go-git: Applied delta updates to %s (%d files changed)", destDir, len(changedFiles))
-	return changedFiles, nil
+	return nil
 }

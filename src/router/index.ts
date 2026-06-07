@@ -4,6 +4,7 @@ import DefaultLayout from '../layouts/DefaultLayout.vue'
 import AdminLayout from '../layouts/AdminLayout.vue'
 import HomePage from '../pages/HomePage.vue'
 import NodesPage from '../pages/NodesPage.vue'
+import TagsPage from '../pages/TagsPage.vue'
 import SectionOrArticlePage from '../pages/SectionOrArticlePage.vue'
 
 import AdminDashboardPage from '../pages/admin/AdminDashboardPage.vue'
@@ -29,6 +30,8 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'home', component: HomePage },
       { path: '-/nodes', name: 'nodes', component: NodesPage },
+      { path: 'tags', name: 'tags', component: TagsPage },
+      { path: 'tags/:tag', name: 'tag', component: TagsPage },
       // Catch-all for every section/article path. Must come last.
       {
         path: ':pathMatch(.*)*',

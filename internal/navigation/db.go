@@ -46,11 +46,19 @@ func InitNavSchema(db *sql.DB) error {
 			override_date      DATETIME DEFAULT CURRENT_TIMESTAMP,
 			FOREIGN KEY(folder_id) REFERENCES nav_folders(id) ON DELETE CASCADE
 		);
+		CREATE TABLE IF NOT EXISTS nav_guide_tags (
+			guide_id INTEGER NOT NULL,
+			tag      TEXT    NOT NULL,
+			PRIMARY KEY (guide_id, tag),
+			FOREIGN KEY(guide_id) REFERENCES nav_guides(id) ON DELETE CASCADE
+		);
 		CREATE INDEX IF NOT EXISTS idx_nav_folders_path         ON nav_folders(path);
 		CREATE INDEX IF NOT EXISTS idx_nav_folders_parent       ON nav_folders(parent_id);
 		CREATE INDEX IF NOT EXISTS idx_nav_folders_content_type ON nav_folders(content_type);
 		CREATE INDEX IF NOT EXISTS idx_nav_guides_folder        ON nav_guides(folder_id);
 		CREATE INDEX IF NOT EXISTS idx_nav_guides_file_path     ON nav_guides(file_path);
+		CREATE INDEX IF NOT EXISTS idx_nav_guide_tags_tag       ON nav_guide_tags(tag);
+		CREATE INDEX IF NOT EXISTS idx_nav_guide_tags_guide     ON nav_guide_tags(guide_id);
 	`)
 	if err != nil {
 		return fmt.Errorf("nav schema init: %w", err)
@@ -92,13 +100,14 @@ func (s *Service) GetNavigationTree(path string) (*NavNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("query nav_folders: %w", err)
 	}
-	if !node.IsLeaf {
-		children, err := s.getChildren(s.db, node.ID)
-		if err != nil {
-			return nil, err
-		}
-		node.Children = children
+	// Always load children: subfolders AND the folder's own .md files (as guide
+	// nodes). A leaf folder has no subfolders but still holds the files the UI
+	// needs to list, so this must run regardless of is_leaf.
+	children, err := s.getChildren(s.db, node.ID)
+	if err != nil {
+		return nil, err
 	}
+	node.Children = children
 	return &node, nil
 }
 
@@ -129,7 +138,52 @@ func (s *Service) getChildren(dbtx DBTX, parentID int64) ([]NavNode, error) {
 		}
 		children = append(children, c)
 	}
-	return children, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Append this folder's indexed .md files as leaf guide nodes so the UI can
+	// list the articles inside it, not just its subfolders.
+	guides, err := s.getGuides(dbtx, parentID)
+	if err != nil {
+		return nil, err
+	}
+	return append(children, guides...), nil
+}
+
+// getGuides returns a folder's indexed .md files as leaf guide nodes. The .md
+// extension is dropped from path so it matches the article paths used elsewhere
+// (breadcrumbs, recent files); /api/content resolves either form.
+func (s *Service) getGuides(dbtx DBTX, folderID int64) ([]NavNode, error) {
+	rows, err := dbtx.Query(`
+		SELECT id, file_path, COALESCE(title, '')
+		FROM nav_guides WHERE folder_id = ? ORDER BY title, file_path`, folderID)
+	if err != nil {
+		return nil, fmt.Errorf("query guides: %w", err)
+	}
+	defer rows.Close()
+
+	var guides []NavNode
+	for rows.Next() {
+		var g NavNode
+		var filePath, title string
+		if err := rows.Scan(&g.ID, &filePath, &title); err != nil {
+			log.Printf("[Navigation] scan guide row: %v", err)
+			continue
+		}
+		if dot := strings.LastIndex(filePath, "."); dot >= 0 && strings.EqualFold(filePath[dot:], ".md") {
+			filePath = filePath[:dot]
+		}
+		g.Path = filePath
+		g.DisplayName = title
+		if g.DisplayName == "" {
+			g.DisplayName = filePath
+		}
+		g.IsLeaf = true
+		g.IsGuide = true
+		guides = append(guides, g)
+	}
+	return guides, rows.Err()
 }
 
 // GetNavigationFlat returns an ordered flat list of folders, optionally filtered
@@ -194,18 +248,97 @@ func (s *Service) upsertFolder(dbtx DBTX, path, displayName, description, conten
 	return id, nil
 }
 
-// upsertGuide inserts or updates an indexed .md file record.
-func (s *Service) upsertGuide(dbtx DBTX, folderID int64, fileName, filePath, title, preview string, wordCount int, lastModified time.Time) error {
+// upsertGuide inserts or updates an indexed .md file record and returns its stable ID.
+func (s *Service) upsertGuide(dbtx DBTX, folderID int64, fileName, filePath, title, preview string, wordCount int, lastModified time.Time) (int64, error) {
 	_, err := dbtx.Exec(`
 		INSERT INTO nav_guides (folder_id, file_name, file_path, title, preview, word_count, last_modified)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(file_path) DO UPDATE SET
+			folder_id     = excluded.folder_id,
 			title         = excluded.title,
 			preview       = excluded.preview,
 			word_count    = excluded.word_count,
 			last_modified = excluded.last_modified
 	`, folderID, fileName, filePath, title, preview, wordCount, lastModified)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	var id int64
+	if err := dbtx.QueryRow(`SELECT id FROM nav_guides WHERE file_path = ?`, filePath).Scan(&id); err != nil {
+		return 0, fmt.Errorf("fetch id for guide %s: %w", filePath, err)
+	}
+	return id, nil
+}
+
+// setGuideTags replaces the tag set for a guide (delete-then-insert) so a rescan
+// reflects the note's current red_tags.
+func (s *Service) setGuideTags(dbtx DBTX, guideID int64, tags []string) error {
+	if _, err := dbtx.Exec(`DELETE FROM nav_guide_tags WHERE guide_id = ?`, guideID); err != nil {
+		return fmt.Errorf("clear tags for guide %d: %w", guideID, err)
+	}
+	for _, tag := range tags {
+		if _, err := dbtx.Exec(
+			`INSERT OR IGNORE INTO nav_guide_tags (guide_id, tag) VALUES (?, ?)`, guideID, tag); err != nil {
+			return fmt.Errorf("insert tag %q for guide %d: %w", tag, guideID, err)
+		}
+	}
+	return nil
+}
+
+// GetAllTags returns every distinct tag with the number of guides carrying it,
+// ordered by descending count then name.
+func (s *Service) GetAllTags() ([]TagCount, error) {
+	rows, err := s.db.Query(`
+		SELECT tag, COUNT(*) AS n FROM nav_guide_tags
+		GROUP BY tag ORDER BY n DESC, tag ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("query tags: %w", err)
+	}
+	defer rows.Close()
+
+	tags := []TagCount{}
+	for rows.Next() {
+		var t TagCount
+		if err := rows.Scan(&t.Name, &t.Count); err != nil {
+			log.Printf("[Navigation] scan tag row: %v", err)
+			continue
+		}
+		tags = append(tags, t)
+	}
+	return tags, rows.Err()
+}
+
+// GetNotesByTag returns the guide nodes tagged with tag, as leaf is_guide nodes
+// (same shape getChildren emits) so the UI can render them like any article list.
+func (s *Service) GetNotesByTag(tag string) ([]NavNode, error) {
+	rows, err := s.db.Query(`
+		SELECT g.id, g.file_path, COALESCE(g.title, '')
+		FROM nav_guides g
+		JOIN nav_guide_tags t ON t.guide_id = g.id
+		WHERE t.tag = ? ORDER BY g.title, g.file_path`, tag)
+	if err != nil {
+		return nil, fmt.Errorf("query notes by tag: %w", err)
+	}
+	defer rows.Close()
+
+	notes := []NavNode{}
+	for rows.Next() {
+		var n NavNode
+		var filePath, title string
+		if err := rows.Scan(&n.ID, &filePath, &title); err != nil {
+			log.Printf("[Navigation] scan tagged note: %v", err)
+			continue
+		}
+		n.Path = strings.TrimSuffix(filePath, ".md")
+		n.DisplayName = title
+		if n.DisplayName == "" {
+			n.DisplayName = n.Path
+		}
+		n.IsLeaf = true
+		n.IsGuide = true
+		notes = append(notes, n)
+	}
+	return notes, rows.Err()
 }
 
 // updateAggregates recalculates child_count and guide_count for every folder.

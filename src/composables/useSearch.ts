@@ -35,7 +35,9 @@ export function useSearch() {
     return index.value
       .filter(
         (e) =>
-          e.title.toLowerCase().includes(q) || e.path.toLowerCase().includes(q),
+          e.title.toLowerCase().includes(q) ||
+          e.path.toLowerCase().includes(q) ||
+          (e.tags ?? []).some((t) => t.toLowerCase().includes(q)),
       )
       .slice(0, 20)
   })

@@ -51,6 +51,16 @@ require_go() {
     command -v go &>/dev/null || die "Go is not installed. Please install Go first."
 }
 
+data_dir() {
+    # Resolve the configured data directory from .env, then config.json, then default.
+    local d
+    d=$(env_get RED_DATA_DIR 2>/dev/null)
+    if [ -z "$d" ] && [ -f "$CONFIG_FILE" ]; then
+        d=$(grep '"dataDir"' "$CONFIG_FILE" 2>/dev/null | sed -E 's/.*"dataDir"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    fi
+    echo "${d:-data}"
+}
+
 token_gen() {
     # Temporarily disable pipefail: tr exits with SIGPIPE when head closes the
     # read end early, which would kill the script under set -o pipefail.
@@ -169,14 +179,16 @@ cmd_status() {
 
 cmd_backup() {
     header "Backing up data"
-    if [ ! -d "./data" ]; then
-        die "./data directory not found."
+    local src
+    src=$(data_dir)
+    if [ ! -d "$src" ]; then
+        die "Data directory '$src' not found."
     fi
     local stamp
     stamp=$(date +%Y%m%d_%H%M%S)
     local dest="./backups/data_${stamp}.tar.gz"
     mkdir -p ./backups
-    tar czf "$dest" ./data
+    tar czf "$dest" "$src"
     success "Backup created: $dest"
 }
 
@@ -209,8 +221,9 @@ cmd_token() {
 
             echo ""
             success "New admin token: ${BOLD}${new_token}${NC}"
-            warn "Restart the node for the change to take effect:"
-            echo "      $(compose_cmd) restart red_engine"
+            warn "Restart the node for the new token to take effect."
+            echo "  • Dev server:        ./setup.sh dev"
+            echo "  • Docker/Podman:     $(compose_cmd 2>/dev/null || echo 'docker compose') restart red_engine"
             ;;
         *)
             info "Token unchanged."
@@ -259,13 +272,15 @@ cmd_install() {
     compose=$(compose_cmd)
 
     # Ensure data dir exists and is owned by UID 1000 (container user)
-    if [ ! -d "./data" ]; then
-        mkdir -p ./data
-        info "Created ./data directory"
+    local configured_data_dir
+    configured_data_dir=$(data_dir)
+    if [ ! -d "$configured_data_dir" ]; then
+        mkdir -p "$configured_data_dir"
+        info "Created data directory: $configured_data_dir"
     fi
-    if [ "$(stat -c '%u' ./data 2>/dev/null || stat -f '%u' ./data 2>/dev/null)" != "1000" ]; then
-        info "Setting ./data ownership to UID 1000 (container user)..."
-        sudo chown -R 1000:1000 ./data || warn "Could not chown ./data — you may hit permission errors."
+    if [ "$(stat -c '%u' "$configured_data_dir" 2>/dev/null || stat -f '%u' "$configured_data_dir" 2>/dev/null)" != "1000" ]; then
+        info "Setting $configured_data_dir ownership to UID 1000 (container user)..."
+        sudo chown -R 1000:1000 "$configured_data_dir" || warn "Could not chown $configured_data_dir — you may hit permission errors."
     fi
 
     # Set up unprivileged port binding on Linux

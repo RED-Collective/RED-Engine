@@ -31,6 +31,11 @@ const emit = defineEmits<{ openSearch: [] }>()
           exact-active-class="bg-white/15 text-white"
         >Home</RouterLink>
         <RouterLink
+          to="/tags"
+          class="rounded px-3 py-1.5 text-white/85 no-underline transition-colors hover:bg-white/15 hover:text-white"
+          active-class="bg-white/15 text-white"
+        >Tags</RouterLink>
+        <RouterLink
           to="/-/nodes"
           class="rounded px-3 py-1.5 text-white/85 no-underline transition-colors hover:bg-white/15 hover:text-white"
           active-class="bg-white/15 text-white"

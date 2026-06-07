@@ -13,6 +13,7 @@ export interface NavNode {
   description?: string
   description_source?: string
   is_leaf: boolean
+  is_guide?: boolean
   child_count?: number
   guide_count?: number
   content_type?: string
@@ -47,6 +48,7 @@ export interface Article {
   prev_article: ArticleRef | null
   next_article: ArticleRef | null
   is_directory: boolean
+  tags?: string[]
 }
 
 export interface RecentFile {
@@ -113,8 +115,15 @@ export interface StartupSync {
   added_at: string
 }
 
-// GET /-/search-index.json returns store.SearchItem[] — title + path only.
+// GET /-/search-index.json returns store.SearchItem[] — title + path + tags.
 export interface SearchEntry {
   title: string
   path: string
+  tags?: string[]
+}
+
+// GET /api/tags returns navigation.TagCount[] — a tag and how many notes carry it.
+export interface TagCount {
+  name: string
+  count: number
 }

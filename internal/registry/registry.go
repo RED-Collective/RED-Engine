@@ -11,13 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RED-Collective/red-engine/internal/taxonomy"
 	_ "modernc.org/sqlite"
 )
 
 // registrySchemaVersion is the current schema generation. It is stored in
 // node_settings under "registry_schema_version" and gates breaking migrations.
-const registrySchemaVersion = 2
+const registrySchemaVersion = 5
 
 var (
 	db   *sql.DB
@@ -69,10 +68,6 @@ func InitRegistry(dataDir string) error {
 			return
 		}
 		initErr = migrate(db)
-		if initErr != nil {
-			return
-		}
-		initErr = seedTaxonomy(db)
 	})
 	return initErr
 }
@@ -92,23 +87,6 @@ func migrate(db *sql.DB) error {
 	}
 
 	ver := schemaVersionValue(db)
-
-	// trusted_authors is unchanged across versions.
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS trusted_authors (
-			public_key    TEXT PRIMARY KEY,
-			name          TEXT NOT NULL,
-			imported_from TEXT,
-			imported_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-			revoked       BOOLEAN DEFAULT 0,
-			revoked_at    DATETIME,
-			signature     TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_trusted_authors_name          ON trusted_authors(name);
-		CREATE INDEX IF NOT EXISTS idx_trusted_authors_imported_from ON trusted_authors(imported_from);
-	`); err != nil {
-		return err
-	}
 
 	// peers — fresh databases get the v2 schema directly; legacy ones are recreated.
 	var capturedPaths map[int64][]string
@@ -140,9 +118,47 @@ func migrate(db *sql.DB) error {
 		return err
 	}
 
-	// Taxonomy, manual tags, content index, and full-text search.
-	if err := createTaxonomyTables(db); err != nil {
+	// Drop the removed branch/taxonomy layer. IF EXISTS makes this a no-op on a
+	// fresh database; on an upgrade it deletes the old taxonomy and manual-tag
+	// tables for good.
+	if _, err := db.Exec(`
+		DROP TABLE IF EXISTS taxonomy;
+		DROP TABLE IF EXISTS manual_tags;
+	`); err != nil {
+		return fmt.Errorf("drop branch tables: %w", err)
+	}
+
+	// Contributor keyring — the admin-recognized signer keys that make a valid
+	// signature read as "verified" rather than "unverified". Create it, migrate any
+	// rows from the legacy trusted_authors table (no author identity, just the
+	// pubkey + label), then drop that table.
+	if err := createContributorsTable(db); err != nil {
 		return err
+	}
+	if tableExists(db, "trusted_authors") {
+		if _, err := db.Exec(`
+			INSERT OR IGNORE INTO contributors (public_key, name, revoked)
+			SELECT public_key, COALESCE(name,''), COALESCE(revoked,0) FROM trusted_authors`); err != nil {
+			return fmt.Errorf("migrate trusted_authors: %w", err)
+		}
+		if _, err := db.Exec(`DROP TABLE trusted_authors`); err != nil {
+			return fmt.Errorf("drop trusted_authors: %w", err)
+		}
+	}
+
+	// v5: drop the abandoned full-text-search / content-index / tags layer — the
+	// remnants of the superseded taxonomy+FTS architecture. Search now runs off
+	// the in-memory store.BuildSearchIndex, so none of these tables are ever read
+	// or written. IF EXISTS makes this a no-op on a fresh database; on an upgrade
+	// it removes the dead tables for good. nav_folder_tags is dropped before
+	// content_tags to respect the foreign key.
+	if _, err := db.Exec(`
+		DROP TABLE IF EXISTS content_fts;
+		DROP TABLE IF EXISTS content_index;
+		DROP TABLE IF EXISTS nav_folder_tags;
+		DROP TABLE IF EXISTS content_tags;
+	`); err != nil {
+		return fmt.Errorf("drop legacy content/fts/tags tables: %w", err)
 	}
 
 	// Backfill the exported-paths junction from captured legacy JSON now that
@@ -209,6 +225,48 @@ func createStartupSyncTable(e execer) error {
 	return err
 }
 
+// createContributorsTable creates the contributor keyring: the set of signer
+// public keys an admin recognizes on this node. There is no author identity —
+// `name` is just an admin-facing label, never shown on the public verification
+// badge. A non-revoked key here is what turns a valid signature "verified".
+func createContributorsTable(e execer) error {
+	_, err := e.Exec(`
+		CREATE TABLE IF NOT EXISTS contributors (
+			public_key TEXT     PRIMARY KEY,
+			name       TEXT     NOT NULL DEFAULT '',
+			added_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			revoked    INTEGER  NOT NULL DEFAULT 0,
+			revoked_at DATETIME
+		);
+		CREATE INDEX IF NOT EXISTS idx_contributors_revoked ON contributors(revoked);
+	`)
+	return err
+}
+
+// RecognizedContributorKeys returns the set of non-revoked contributor public
+// keys (lowercased hex) this node recognizes. A cryptographically valid signature
+// reads as "verified" only when its signer key is in this set; otherwise it is
+// "unverified" (intact, but not vouched for by this node).
+func RecognizedContributorKeys() map[string]bool {
+	out := make(map[string]bool)
+	db := GetDB()
+	if db == nil {
+		return out
+	}
+	rows, err := db.Query(`SELECT public_key FROM contributors WHERE revoked = 0`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil && k != "" {
+			out[strings.ToLower(k)] = true
+		}
+	}
+	return out
+}
+
 func createAuxTables(e execer) error {
 	_, err := e.Exec(`
 		CREATE TABLE IF NOT EXISTS peer_exported_paths (
@@ -227,213 +285,7 @@ func createAuxTables(e execer) error {
 			latency_ms INTEGER
 		);
 		CREATE INDEX IF NOT EXISTS idx_health_history_peer ON peer_health_history(peer_id, checked_at DESC);
-
-		CREATE TABLE IF NOT EXISTS content_tags (
-			id   INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT    NOT NULL UNIQUE
-		);
-		CREATE TABLE IF NOT EXISTS nav_folder_tags (
-			folder_id INTEGER NOT NULL,
-			tag_id    INTEGER NOT NULL REFERENCES content_tags(id) ON DELETE CASCADE,
-			PRIMARY KEY (folder_id, tag_id)
-		);
 	`)
-	return err
-}
-
-// createTaxonomyTables creates the fixed-taxonomy, manual-tag, content-index,
-// and full-text-search tables. content_fts is a standalone FTS5 table (not an
-// external-content table): the content indexer owns its rows directly, so there
-// are deliberately no sync triggers here.
-func createTaxonomyTables(e execer) error {
-	_, err := e.Exec(`
-		CREATE TABLE IF NOT EXISTS taxonomy (
-			uid        TEXT    PRIMARY KEY,           -- stable federation id: 'c<id>' core, 'u<hash>' community
-			id         INTEGER,                       -- permanent integer (core nodes only)
-			name       TEXT    NOT NULL,
-			slug       TEXT    NOT NULL,
-			parent_uid TEXT    REFERENCES taxonomy(uid),
-			depth      INTEGER NOT NULL DEFAULT 0,
-			source     TEXT    NOT NULL DEFAULT 'core'
-			                   CHECK(source IN ('core','community')),
-			created_by TEXT,                          -- author pubkey (community)
-			signature  TEXT,                          -- ed25519 over the canonical record (community)
-			created_at INTEGER,
-			verified   BOOLEAN NOT NULL DEFAULT 0,    -- core=1; community=1 when signer is a trusted author
-			UNIQUE(parent_uid, slug)
-		);
-		CREATE INDEX IF NOT EXISTS idx_taxonomy_parent ON taxonomy(parent_uid);
-
-		CREATE TABLE IF NOT EXISTS manual_tags (
-			id   INTEGER PRIMARY KEY,
-			name TEXT    NOT NULL UNIQUE
-		);
-
-		CREATE TABLE IF NOT EXISTS content_index (
-			id            INTEGER PRIMARY KEY,
-			path          TEXT    UNIQUE NOT NULL,
-			title         TEXT    NOT NULL DEFAULT '',
-			content_type  TEXT    NOT NULL DEFAULT 'unknown'
-			                      CHECK(content_type IN ('library','manual','unknown')),
-			taxonomy_uid  TEXT    REFERENCES taxonomy(uid),
-			guide_name    TEXT,
-			guide_order   INTEGER,
-			tag1_id       INTEGER REFERENCES manual_tags(id),
-			tag2_id       INTEGER REFERENCES manual_tags(id),
-			author_pubkey TEXT,
-			author_name   TEXT,
-			verified      BOOLEAN NOT NULL DEFAULT 0,
-			file_hash     TEXT,
-			signed_at     INTEGER,
-			indexed_at    INTEGER NOT NULL DEFAULT (strftime('%s','now'))
-		);
-		CREATE INDEX IF NOT EXISTS idx_ci_taxonomy ON content_index(taxonomy_uid);
-		CREATE INDEX IF NOT EXISTS idx_ci_guide    ON content_index(guide_name, guide_order);
-		CREATE INDEX IF NOT EXISTS idx_ci_author   ON content_index(author_pubkey);
-		CREATE INDEX IF NOT EXISTS idx_ci_type     ON content_index(content_type, verified);
-		CREATE INDEX IF NOT EXISTS idx_ci_tags     ON content_index(tag1_id, tag2_id);
-		CREATE INDEX IF NOT EXISTS idx_ci_hash     ON content_index(file_hash);
-
-		CREATE VIRTUAL TABLE IF NOT EXISTS content_fts USING fts5(
-			path UNINDEXED,
-			title,
-			body,
-			author_name,
-			tokenize='porter ascii'
-		);
-	`)
-	return err
-}
-
-// seedTaxonomy populates the curated (source='core') taxonomy and manual_tags
-// from the embedded JSON. Core nodes are keyed by the permanent UID 'c<id>', so
-// the upsert is safe to run on every startup: new nodes are added and renames /
-// restructures propagate, while community rows (different UIDs) are untouched.
-func seedTaxonomy(db *sql.DB) error {
-	tree, err := taxonomy.Tree()
-	if err != nil {
-		return fmt.Errorf("load taxonomy tree: %w", err)
-	}
-	tags, err := taxonomy.Tags()
-	if err != nil {
-		return fmt.Errorf("load manual tags: %w", err)
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	var insertNode func(n taxonomy.Node, parentUID string, depth int) error
-	insertNode = func(n taxonomy.Node, parentUID string, depth int) error {
-		var parent any
-		if parentUID != "" {
-			parent = parentUID
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO taxonomy (uid, id, name, slug, parent_uid, depth, source, verified)
-			VALUES (?, ?, ?, ?, ?, ?, 'core', 1)
-			ON CONFLICT(uid) DO UPDATE SET
-				name=excluded.name, slug=excluded.slug,
-				parent_uid=excluded.parent_uid, depth=excluded.depth`,
-			taxonomy.CoreUID(n.ID), n.ID, n.Name, n.Slug, parent, depth); err != nil {
-			return err
-		}
-		for _, c := range n.Children {
-			if err := insertNode(c, taxonomy.CoreUID(n.ID), depth+1); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for _, root := range tree {
-		if err := insertNode(root, "", 0); err != nil {
-			return err
-		}
-	}
-
-	for _, t := range tags {
-		if _, err := tx.Exec(`
-			INSERT INTO manual_tags (id, name) VALUES (?, ?)
-			ON CONFLICT(id) DO UPDATE SET name=excluded.name`, t.ID, t.Name); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// TaxonomyNode is one taxonomy entry, used for ancestor breadcrumbs.
-type TaxonomyNode struct {
-	UID   string `json:"uid"`
-	Name  string `json:"name"`
-	Slug  string `json:"slug"`
-	Depth int    `json:"depth"`
-}
-
-// TaxonomyPath returns the ancestor chain from root to the given uid, ordered
-// root-first (e.g. Applied Sciences -> Engineering -> ... -> CPU Design). It
-// returns an empty slice if the uid is unknown. It walks both curated and
-// community nodes, since both live in the same table linked by parent_uid.
-func TaxonomyPath(uid string) ([]TaxonomyNode, error) {
-	rows, err := db.Query(`
-		WITH RECURSIVE path(uid, name, slug, parent_uid, depth) AS (
-			SELECT uid, name, slug, parent_uid, depth FROM taxonomy WHERE uid = ?
-			UNION ALL
-			SELECT t.uid, t.name, t.slug, t.parent_uid, t.depth
-			FROM taxonomy t JOIN path p ON t.uid = p.parent_uid
-		)
-		SELECT uid, name, slug, depth FROM path ORDER BY depth ASC
-	`, uid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []TaxonomyNode
-	for rows.Next() {
-		var n TaxonomyNode
-		if err := rows.Scan(&n.UID, &n.Name, &n.Slug, &n.Depth); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
-	}
-	return out, rows.Err()
-}
-
-// CommunityBranch is a user-created taxonomy node (source='community'). Its UID
-// is deterministic (taxonomy.CommunityUID of parent+slug) so the same branch
-// created on different nodes converges instead of duplicating.
-type CommunityBranch struct {
-	UID       string
-	ParentUID string
-	Slug      string
-	Name      string
-	CreatedBy string // author pubkey (hex)
-	Signature string // hex ed25519 over the canonical record
-	CreatedAt int64  // unix seconds
-	Verified  bool   // signer is a trusted author
-}
-
-// InsertCommunityBranch stores a user-created branch under an existing parent.
-// It is idempotent by UID, so a branch arriving from several peers (identical
-// deterministic UID) merges rather than duplicating. depth is derived from the
-// parent. Signature verification is performed by the caller before storage.
-func InsertCommunityBranch(b CommunityBranch) error {
-	var parentDepth int
-	err := db.QueryRow(`SELECT depth FROM taxonomy WHERE uid = ?`, b.ParentUID).Scan(&parentDepth)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("parent branch %q does not exist", b.ParentUID)
-	}
-	if err != nil {
-		return err
-	}
-	_, err = db.Exec(`
-		INSERT OR IGNORE INTO taxonomy
-			(uid, id, name, slug, parent_uid, depth, source, created_by, signature, created_at, verified)
-		VALUES (?, NULL, ?, ?, ?, ?, 'community', ?, ?, ?, ?)`,
-		b.UID, b.Name, b.Slug, b.ParentUID, parentDepth+1,
-		b.CreatedBy, b.Signature, b.CreatedAt, b.Verified)
 	return err
 }
 

@@ -47,6 +47,35 @@ func (h *handler) navAPI(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(nodes)
 }
 
+// tagsAPI serves the tag index.
+//
+//	GET /api/tags          → [{name,count}] for every tag, by descending count
+//	GET /api/tags?tag=<t>   → the notes (guide nodes) carrying tag <t>
+func (h *handler) tagsAPI(w http.ResponseWriter, r *http.Request) {
+	if h.navService == nil {
+		http.Error(w, "navigation service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	if tag := r.URL.Query().Get("tag"); tag != "" {
+		notes, err := h.navService.GetNotesByTag(tag)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(notes)
+		return
+	}
+
+	tags, err := h.navService.GetAllTags()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	json.NewEncoder(w).Encode(tags)
+}
+
 // navRescan triggers a fresh filesystem scan. Admin only.
 //
 //	POST /-/admin/navigation/rescan

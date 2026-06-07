@@ -22,10 +22,17 @@ type NavNode struct {
 	Description    string    `json:"description,omitempty"`
 	DescriptionSrc string    `json:"description_source,omitempty"`
 	IsLeaf         bool      `json:"is_leaf"`
+	IsGuide        bool      `json:"is_guide,omitempty"`
 	ChildCount     int       `json:"child_count,omitempty"`
 	GuideCount     int       `json:"guide_count,omitempty"`
 	ContentType    string    `json:"content_type,omitempty"`
 	Children       []NavNode `json:"children,omitempty"`
+}
+
+// TagCount is a tag and how many guides carry it.
+type TagCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
 }
 
 // ScanResult captures statistics from a filesystem scan.

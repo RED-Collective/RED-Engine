@@ -3,6 +3,7 @@ package router
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -35,14 +36,20 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 
 	// ---- Peer-based sync ----
 	if req.PeerURL != "" && req.RemotePath != "" {
-		destDir := filepath.Join(h.store.DataDir(), req.Filename)
-		if err := h.pullFromPeer(req.PeerURL, req.RemotePath, destDir); err != nil {
+		// The local top-level folder comes from the peer's manifest, so the whole
+		// data root is passed; req.Filename is no longer the destination.
+		if err := h.pullFromPeer(req.PeerURL, req.RemotePath, h.store.DataDir(), req.Filename); err != nil {
 			http.Error(w, "Peer sync failed: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		if err := h.store.Reload(); err != nil {
 			http.Error(w, "Reload after peer sync failed: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if h.navService != nil {
+			if _, err := h.navService.ScanDataDirectories(); err != nil {
+				log.Printf("[Sync] nav rescan after peer sync: %v", err)
+			}
 		}
 		if req.SaveToStartup {
 			if err := registry.AddStartupSync(req.PeerURL+req.RemotePath, req.Filename); err != nil {
@@ -51,7 +58,7 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Peer sync completed to " + destDir))
+		w.Write([]byte("Peer sync completed from " + req.PeerURL + "/" + req.RemotePath))
 		return
 	}
 
@@ -75,7 +82,15 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, addr := range addrs {
 		ip := net.ParseIP(addr)
-		if ip == nil || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() {
+		// Unparseable, link-local (incl. 169.254.169.254 metadata) and multicast
+		// are ALWAYS forbidden.
+		if ip == nil || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			http.Error(w, "Local network imports are strictly forbidden", http.StatusForbidden)
+			return
+		}
+		// Loopback / RFC1918 / unspecified are forbidden unless local-dev
+		// federation testing is explicitly enabled.
+		if !fetch.AllowPrivateSync() && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified()) {
 			http.Error(w, "Local network imports are strictly forbidden", http.StatusForbidden)
 			return
 		}
@@ -99,7 +114,7 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	if targetSubPath == "." || targetSubPath == "" {
 		pathParts := strings.Split(strings.TrimRight(parsedURL.Path, "/"), "/")
 		if len(pathParts) > 0 {
-			if parsedURL.Host == "github.com" && len(pathParts) >= 3 && pathParts[3] == "archive" {
+			if parsedURL.Host == "github.com" && len(pathParts) >= 4 && pathParts[3] == "archive" {
 				targetSubPath = pathParts[2]
 			} else {
 				lastPart := pathParts[len(pathParts)-1]
@@ -136,12 +151,7 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		if err := os.MkdirAll(filepath.Dir(destinationDir), 0755); err != nil {
-			http.Error(w, "Failed to create directory structure", http.StatusInternalServerError)
-			return
-		}
-		if !strings.HasSuffix(strings.ToLower(destinationDir), ".md") {
-			destinationDir += ".md"
+		if !strings.HasSuffix(strings.ToLower(targetSubPath), ".md") {
 			targetSubPath += ".md"
 		}
 		httpReq, err := http.NewRequest(http.MethodGet, req.URL, nil)
@@ -161,14 +171,15 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Remote server returned non-OK status", http.StatusBadGateway)
 			return
 		}
-		outFile, err := os.Create(destinationDir)
+		content, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024)) // 10MB
 		if err != nil {
-			http.Error(w, "Failed to create file on disk", http.StatusInternalServerError)
+			http.Error(w, "Failed to read content", http.StatusInternalServerError)
 			return
 		}
-		defer outFile.Close()
-		if _, err := io.Copy(outFile, resp.Body); err != nil {
-			http.Error(w, "Failed to write content", http.StatusInternalServerError)
+		// File the single note under its own top-level folder named after the import,
+		// so the navigation scanner (which only indexes top-level directories) sees it.
+		if err := fetch.OrganizeLooseMarkdown(h.store.DataDir(), targetSubPath, filepath.Base(targetSubPath), content); err != nil {
+			http.Error(w, "Failed to write content: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 	}
@@ -176,6 +187,11 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Reload(); err != nil {
 		http.Error(w, "Content updated but failed to update memory index", http.StatusInternalServerError)
 		return
+	}
+	if h.navService != nil {
+		if _, err := h.navService.ScanDataDirectories(); err != nil {
+			log.Printf("[Sync] nav rescan after import: %v", err)
+		}
 	}
 
 	if req.SaveToStartup {
@@ -186,7 +202,9 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Successfully synced to data/" + targetSubPath))
+	// Content is filed under its own top-level folder (data/<source>/); targetSubPath
+	// names that folder and keys the sync ledger.
+	w.Write([]byte("Successfully synced and organized under \"" + targetSubPath + "\""))
 }
 
 func (h *handler) adminConfig(w http.ResponseWriter, r *http.Request) {
@@ -222,8 +240,10 @@ func (h *handler) adminRemove(w http.ResponseWriter, r *http.Request) {
 	if req.DeleteLocalFiles {
 		safeName := filepath.Clean(req.Filename)
 		if safeName != "." && safeName != "" && !strings.HasPrefix(safeName, "..") && !filepath.IsAbs(safeName) {
-			fullRemovalPath := filepath.Join(h.store.DataDir(), safeName)
-			os.RemoveAll(fullRemovalPath)
+			// Delete exactly the files this source wrote (recorded in its ledger),
+			// never the whole shared taxonomy bucket, and drop its hidden git cache.
+			fetch.RemoveBySource(h.store.DataDir(), safeName)
+			os.RemoveAll(filepath.Join(h.store.DataDir(), "."+safeName+".gitsrc"))
 		}
 	}
 

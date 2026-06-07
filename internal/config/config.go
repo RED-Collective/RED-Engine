@@ -43,6 +43,25 @@ type Config struct {
 	StartupSync         []RemoteSync `json:"startupSync"`
 	TemplateSwitchDepth int          `json:"templateSwitchDepth"` // default 2
 
+	// Frontend hosting — the engine is frontend-agnostic and exposes a JSON API
+	// (see GET /api). A compiled UI is served as plain static files; it can be a
+	// single-page app (React/Tailwind, etc.) OR a multi-page static build.
+	//
+	// WebDir, if set, is a filesystem directory holding the built frontend
+	// (index.html + assets). When present it is served at / and takes priority
+	// over the binary's embedded UI, so a new build can be dropped in without
+	// recompiling. Real files are served as-is; an extension-less path that
+	// matches no file falls back to index.html (SPA client-side routing), while a
+	// missing file WITH an extension returns 404 — so non-SPA builds work too.
+	// Env: RED_WEB_DIR.
+	WebDir string `json:"webDir"`
+
+	// CORSOrigins is a comma-separated allow-list of browser origins permitted to
+	// call the API cross-origin (e.g. a separate frontend dev server on another
+	// port). "*" allows any origin. Empty disables CORS (same-origin only).
+	// Auth uses the X-Admin-Token header, not cookies, so "*" is safe here.
+	// Env: RED_CORS_ORIGINS.
+	CORSOrigins string `json:"corsOrigins"`
 }
 
 func Default() Config {

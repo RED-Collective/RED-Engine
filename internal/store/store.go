@@ -17,10 +17,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RED-Collective/red-engine/internal/fetch"
 	"github.com/RED-Collective/red-engine/internal/models"
-	"github.com/RED-Collective/red-engine/internal/render"
-
 	"github.com/RED-Collective/red-engine/internal/registry"
+	"github.com/RED-Collective/red-engine/internal/render"
 
 	"github.com/radovskyb/watcher"
 )
@@ -34,8 +34,9 @@ type Store struct {
 }
 
 type SearchItem struct {
-	Title string `json:"title"`
-	Path  string `json:"path"`
+	Title string   `json:"title"`
+	Path  string   `json:"path"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 func New(dataDir string) *Store {
@@ -121,15 +122,27 @@ func (s *Store) Reload() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	trustedKeys, allSignatures := s.loadSecurityData()
+	allSignatures := s.loadSecurityData()
+	recognized := registry.RecognizedContributorKeys()
 	newNav := make(map[string]*models.Section)
 
 	err := filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			// Skip metadata/source dirs (.git, .red-feather, .meta, the hidden
+			// .<vault>.gitsrc cache) so the pristine clone is never indexed.
+			if path != s.dataDir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".md" {
 			return nil
 		}
 
-		art, parts, err := s.processArticle(path, trustedKeys, allSignatures)
+		art, parts, err := s.processArticle(path, allSignatures, recognized)
 		if err == nil && art != nil {
 			s.insertIntoMap(newNav, parts, art)
 		} else if err != nil {
@@ -193,9 +206,10 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 
 		s.removeFromMap(s.nav, parts)
 
-		trustedKeys, allSignatures := s.loadSecurityData()
+		allSignatures := s.loadSecurityData()
+		recognized := registry.RecognizedContributorKeys()
 
-		art, _, err := s.processArticle(p, trustedKeys, allSignatures)
+		art, _, err := s.processArticle(p, allSignatures, recognized)
 		if err == nil && art != nil {
 			s.insertIntoMap(s.nav, parts, art)
 		} else if err != nil {
@@ -209,28 +223,16 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 // DATA PROCESSING HELPERS
 // =====================================================================
 
-func (s *Store) loadSecurityData() (map[string]string, map[string]models.ManifestEntry) {
-	trustedKeys := make(map[string]string)
-	regDB := registry.GetDB()
-	if regDB != nil {
-		rows, err := regDB.Query(`SELECT public_key, name FROM trusted_authors WHERE revoked = 0`)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var pub, name string
-				if err := rows.Scan(&pub, &name); err == nil {
-					trustedKeys[strings.ToLower(pub)] = name
-				}
-			}
-		}
-	}
-
+func (s *Store) loadSecurityData() map[string]models.ManifestEntry {
 	allSignatures := make(map[string]models.ManifestEntry)
 	filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() || filepath.Base(path) != "signer.db" {
 			return nil
 		}
-		if filepath.Base(filepath.Dir(path)) != ".red-signer" {
+		// Accept any signer.db under a `.red-*` directory. Vaults signed by
+		// RED-Feather use `.red-feather/`; older ones use `.red-signer/`; the
+		// organizer copies each source's db into `.red-feather--<source>/`.
+		if !strings.HasPrefix(filepath.Base(filepath.Dir(path)), ".red-") {
 			return nil
 		}
 		signerDB, err := sql.Open("sqlite", path)
@@ -256,23 +258,29 @@ func (s *Store) loadSecurityData() (map[string]string, map[string]models.Manifes
 			if err := rows.Scan(&filePath, &fileHash, &pubKey, &sig); err != nil {
 				continue
 			}
-			fullKey := filepath.ToSlash(filePath)
-			if relDir != "." && !strings.HasPrefix(fullKey, relDir+"/") {
-				fullKey = filepath.ToSlash(filepath.Join(relDir, filePath))
-			}
-			allSignatures[fullKey] = models.ManifestEntry{
+			entry := models.ManifestEntry{
 				FileHash:  fileHash,
 				Hash:      fileHash,
 				PublicKey: pubKey,
 				Signature: sig,
 			}
+			fullKey := filepath.ToSlash(filePath)
+			if relDir != "." && !strings.HasPrefix(fullKey, relDir+"/") {
+				fullKey = filepath.ToSlash(filepath.Join(relDir, filePath))
+			}
+			allSignatures[fullKey] = entry
+			// Also index by content hash so a note still verifies after being
+			// moved, where its on-disk path no longer matches signer.db's record.
+			if fileHash != "" {
+				allSignatures["sha256:"+fileHash] = entry
+			}
 		}
 		return nil
 	})
-	return trustedKeys, allSignatures
+	return allSignatures
 }
 
-func (s *Store) processArticle(p string, trustedKeys map[string]string, allSignatures map[string]models.ManifestEntry) (*models.Article, []string, error) {
+func (s *Store) processArticle(p string, allSignatures map[string]models.ManifestEntry, recognized map[string]bool) (*models.Article, []string, error) {
 	content, err := os.ReadFile(p)
 	if err != nil {
 		return nil, nil, err
@@ -298,40 +306,47 @@ func (s *Store) processArticle(p string, trustedKeys map[string]string, allSigna
 	}
 
 	isVerified := false
-	authorName := "Unverified / Unknown Origin"
-	verifyErr := "File signature not found in manifest"
+	signerKey := ""
+	verifyErr := "File has no signature"
 	verificationState := "unsigned"
 
-	if entry, exists := allSignatures[relativePath]; exists {
+	entry, exists := allSignatures[relativePath]
+	if !exists {
+		// Fall back to a content-hash match: a note still verifies after being
+		// moved, since its on-disk path may differ from signer.db's record.
+		entry, exists = allSignatures["sha256:"+fileHash]
+	}
+	if exists {
+		// Surface the signer's key for transparency. There is no author identity
+		// and no trust tier — every signer is simply a contributor.
+		signerKey = entry.PublicKey
 		entryHash := entry.FileHash
 		if entryHash == "" {
 			entryHash = entry.Hash
 		}
-		if entryHash == fileHash {
-			if trustedAuthor, isTrusted := trustedKeys[strings.ToLower(entry.PublicKey)]; isTrusted {
-				pubBytes, err1 := hex.DecodeString(entry.PublicKey)
-				sigBytes, err2 := hex.DecodeString(entry.Signature)
-				if err1 == nil && err2 == nil && len(pubBytes) == ed25519.PublicKeySize {
-					if ed25519.Verify(pubBytes, content, sigBytes) || ed25519.Verify(pubBytes, []byte(fileHash), sigBytes) || ed25519.Verify(pubBytes, hashBytes[:], sigBytes) {
-						isVerified = true
-						authorName = trustedAuthor
-						verifyErr = ""
-						verificationState = "verified"
-					} else {
-						verifyErr = "Invalid Signature: Cryptographic verification failed"
-						verificationState = "invalid_sig"
-					}
+		switch {
+		case entryHash != fileHash:
+			verifyErr = "Hash mismatch: file content was modified after signing"
+			verificationState = "tampered"
+		default:
+			pubBytes, err1 := hex.DecodeString(entry.PublicKey)
+			sigBytes, err2 := hex.DecodeString(entry.Signature)
+			if err1 == nil && err2 == nil && len(pubBytes) == ed25519.PublicKeySize &&
+				(ed25519.Verify(pubBytes, content, sigBytes) ||
+					ed25519.Verify(pubBytes, []byte(fileHash), sigBytes) ||
+					ed25519.Verify(pubBytes, hashBytes[:], sigBytes)) {
+				if recognized[strings.ToLower(entry.PublicKey)] {
+					isVerified = true
+					verifyErr = ""
+					verificationState = "verified"
 				} else {
-					verifyErr = "Malformed Signature or Public Key data"
-					verificationState = "malformed"
+					verifyErr = "Signed by an unrecognized contributor key"
+					verificationState = "unverified"
 				}
 			} else {
-				verifyErr = "Untrusted Key: The public key is not mapped in contributors.json"
-				verificationState = "untrusted"
+				verifyErr = "Unverified: signature or key is malformed or does not validate"
+				verificationState = "unverified"
 			}
-		} else {
-			verifyErr = "Hash Mismatch: File content was modified after signing"
-			verificationState = "tampered"
 		}
 	}
 
@@ -346,9 +361,10 @@ func (s *Store) processArticle(p string, trustedKeys map[string]string, allSigna
 		Raw:               string(content),
 		Hash:              fileHash,
 		Verified:          isVerified,
-		Author:            authorName,
+		SignerKey:         signerKey,
 		VerificationError: verifyErr,
 		VerificationState: verificationState,
+		Tags:              fetch.FrontmatterTags(content),
 	}
 
 	return art, parts, nil
@@ -371,6 +387,7 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 				items = append(items, SearchItem{
 					Title: "📄 " + art.Title,
 					Path:  art.Path,
+					Tags:  art.Tags,
 				})
 			}
 			return
@@ -389,6 +406,7 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 			items = append(items, SearchItem{
 				Title: "📄 " + art.Title,
 				Path:  art.Path,
+				Tags:  art.Tags,
 			})
 		}
 

@@ -18,14 +18,20 @@ var (
 	keyPath string
 )
 
-// InitNodeIdentity loads or generates the node's Ed25519 key pair.
-// Keys are stored in ~/.red-engine/node.key (private, 0600) and node.pub (0644).
-func InitNodeIdentity() error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot get home dir: %w", err)
+// InitNodeIdentity loads or generates the node's Ed25519 key pair, stored in
+// stateDir/node.key (private, 0600) and node.pub (0644). stateDir must match the
+// node's private state dir (where registry.db lives) so two local nodes with
+// distinct RED_STATE_DIR get distinct identities. An empty stateDir falls back to
+// ~/.red-engine for backward compatibility.
+func InitNodeIdentity(stateDir string) error {
+	keyDir := stateDir
+	if keyDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("cannot get home dir: %w", err)
+		}
+		keyDir = filepath.Join(home, ".red-engine")
 	}
-	keyDir := filepath.Join(home, ".red-engine")
 	if err := os.MkdirAll(keyDir, 0700); err != nil {
 		return fmt.Errorf("cannot create key dir: %w", err)
 	}

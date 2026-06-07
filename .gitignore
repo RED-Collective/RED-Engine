@@ -31,5 +31,10 @@ Thumbs.db
 
 !*.sh
 !README.md
+!BETA_TESTING.md
 !LICENSE
 .claude
+
+# local two-node demo (scripts/two-node.sh)
+.red-demo/
+/red

@@ -12,7 +12,7 @@
     <script type="module" src="/@vite/client"></script>
     <script type="module" src="/src/main.js"></script>
     {{else}}
-    <link rel="stylesheet" href="/static/dist/main.css">
+    <link rel="stylesheet" href="/static/tailwind.css">
     {{end}}
 </head>
 <body class="bg-paper-white text-ink-black">
@@ -105,17 +105,13 @@
                 {{ if eq $state "verified" }}
                 <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#86efac] bg-[#f0fdf4] px-2.5 py-1 font-sans text-xs font-semibold text-[#15803d]">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" class="h-[0.85rem] w-[0.85rem]"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
-                    Verified · {{ .Author }}
+                    Verified · {{ printf "%.12s" .SignerKey }}…
                 </span>
                 {{ else if eq $state "tampered" }}
                 <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#fca5a5] bg-[#fff1f2] px-2.5 py-1 font-sans text-xs font-semibold text-[#b91c1c]">⚠ Modified After Signing</span>
-                {{ else if eq $state "invalid_sig" }}
-                <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#fca5a5] bg-[#fff1f2] px-2.5 py-1 font-sans text-xs font-semibold text-[#b91c1c]">✗ Invalid Signature</span>
-                {{ else if eq $state "untrusted" }}
-                <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#fcd34d] bg-[#fffbeb] px-2.5 py-1 font-sans text-xs font-semibold text-[#92400e]">⚠ Untrusted Signer</span>
-                {{ else if eq $state "malformed" }}
-                <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#fca5a5] bg-[#fff1f2] px-2.5 py-1 font-sans text-xs font-semibold text-[#b91c1c]">✗ Malformed Signature</span>
-                {{ else if $state }}
+                {{ else if eq $state "unverified" }}
+                <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#fcd34d] bg-[#fffbeb] px-2.5 py-1 font-sans text-xs font-semibold text-[#92400e]" title="{{ .VerificationError }}">⚠ Unverified Signature</span>
+                {{ else }}
                 <span class="mt-2 inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded border border-[#93c5fd] bg-[#eff6ff] px-2.5 py-1 font-sans text-xs font-semibold text-[#1e3a5f]">Unsigned</span>
                 {{ end }}
             </div>

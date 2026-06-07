@@ -29,8 +29,9 @@ const notFound = ref(false)
 
 // View mode: directory hub vs. article reader.
 const isDirectory = computed(() => article.value?.is_directory || (!article.value && !!dirNode.value))
-const subfolders = computed(() => (dirNode.value?.children ?? []).filter((c) => !c.is_leaf))
-const articles = computed(() => (dirNode.value?.children ?? []).filter((c) => c.is_leaf))
+// Guide nodes (is_guide=true) are article files; the rest are sub-folders.
+const subfolders = computed(() => (dirNode.value?.children ?? []).filter((c) => !c.is_guide))
+const articles = computed(() => (dirNode.value?.children ?? []).filter((c) => c.is_guide))
 
 async function load(p: string) {
   loading.value = true
@@ -45,7 +46,7 @@ async function load(p: string) {
   } catch {
     // No article/RED_KNOWLEDGE — fall back to a navigation-only directory hub.
     const node = await safeSubtree(p)
-    if (node && (node.children?.length || !node.is_leaf)) {
+    if (node) {
       dirNode.value = node
     } else {
       notFound.value = true
@@ -101,7 +102,6 @@ watch(path, (p) => void load(p), { immediate: true })
       ></div>
 
       <section v-if="subfolders.length">
-        <h2 class="mb-4 font-serif text-xl font-bold text-ink">Folders</h2>
         <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <SectionCard v-for="s in subfolders" :key="s.path" :node="s" />
         </div>
@@ -114,7 +114,7 @@ watch(path, (p) => void load(p), { immediate: true })
             v-for="a in articles"
             :key="a.path"
             :title="a.display_name"
-            :path="a.path"
+            :path="'/' + a.path"
           />
         </div>
       </section>
@@ -134,7 +134,18 @@ watch(path, (p) => void load(p), { immediate: true })
             :hash="article.hash"
           />
         </div>
-        <p v-if="article.author" class="mb-6 text-sm text-ink-muted">by {{ article.author }}</p>
+        <p v-if="article.author" class="mb-4 text-sm text-ink-muted">by {{ article.author }}</p>
+
+        <div v-if="article.tags?.length" class="mb-6 flex flex-wrap gap-2">
+          <RouterLink
+            v-for="t in article.tags"
+            :key="t"
+            :to="`/tags/${encodeURIComponent(t)}`"
+            class="inline-flex items-center rounded-full border border-line bg-imperial-soft/40 px-3 py-1 text-xs font-medium text-imperial no-underline transition-colors hover:border-imperial/40 hover:bg-imperial-soft"
+          >
+            #{{ t }}
+          </RouterLink>
+        </div>
 
         <div class="prose-red max-w-none" v-html="article.body_html"></div>
 
