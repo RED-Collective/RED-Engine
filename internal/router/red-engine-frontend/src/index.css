@@ -1,1 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Public+Sans:ital,wght@0,100..900;1,100..900&display=swap');
 @import 'tailwindcss';
+
+@theme {
+  --color-brand: #9b111e;
+  --color-secondary: #008080;
+  --color-tertiary: #fdfcfb;
+  --color-neutral: #4a4a4a;
+
+  --color-brand-50: #fdf2f3;
+  --color-brand-100: #fbe3e6;
+  --color-brand-200: #f5bcc4;
+  --color-brand-300: #ee8f9b;
+  --color-brand-400: #e05264;
+  --color-brand-500: #c92b3e;
+  --color-brand-600: #9b111e;
+  --color-brand-700: #830f1a;
+  --color-brand-800: #6d1018;
+  --color-brand-900: #5d1118;
+  --color-brand-950: #33070c;
+
+  --color-secondary-50: #effefe;
+  --color-secondary-100: #c7ffff;
+  --color-secondary-200: #90ffff;
+  --color-secondary-300: #51f7f7;
+  --color-secondary-400: #1de4e4;
+  --color-secondary-500: #04c7c7;
+  --color-secondary-600: #009f9f;
+  --color-secondary-700: #008080;
+  --color-secondary-800: #086262;
+  --color-secondary-900: #0b5252;
+  --color-secondary-950: #003131;
+
+  --color-tertiary-50: #ffffff;
+  --color-tertiary-100: #fdfcfb;
+  --color-tertiary-200: #f8f4ef;
+  --color-tertiary-300: #efe6da;
+  --color-tertiary-400: #dfccb7;
+  --color-tertiary-500: #caae92;
+  --color-tertiary-600: #b48f6e;
+  --color-tertiary-700: #987253;
+  --color-tertiary-800: #7d5e47;
+  --color-tertiary-900: #654d3d;
+  --color-tertiary-950: #36271f;
+
+  --color-neutral-50: #f6f6f6;
+  --color-neutral-100: #e7e7e7;
+  --color-neutral-200: #d1d1d1;
+  --color-neutral-300: #b0b0b0;
+  --color-neutral-400: #888888;
+  --color-neutral-500: #6d6d6d;
+  --color-neutral-600: #5d5d5d;
+  --color-neutral-700: #4a4a4a;
+  --color-neutral-800: #3d3d3d;
+  --color-neutral-900: #303030;
+  --color-neutral-950: #1d1d1d;
+
+  --font-display: 'EB Garamond', serif;
+  --font-body: 'Public Sans', sans-serif;
+}
