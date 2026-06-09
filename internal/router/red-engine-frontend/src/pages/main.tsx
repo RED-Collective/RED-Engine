@@ -9,13 +9,13 @@ export default function MainPage() {
       <div className="absolute inset-0 bg-linear-to-b from-transparent to-white" />
 
       <div className="flex flex-1 flex-col justify-items-center align-middle z-10 p-auto">
-        <h2 className="flex text-center mt-24 mx-auto text-3xl font-sans p-16">
+        <h2 className="flex text-center mt-24 mx-auto text-6xl font-sans p-16">
           RED Engine Protocol
         </h2>
 
         <div>
           <h1 className="mx-auto justify-center font-black text-neutral-900 text-7xl text-center">
-            Decentralized, Stateless, Verifiable
+            Resilient, Encrypted, Decentralized
           </h1>
           <h1 className="mx-auto justify-center text-center text-7xl font-black text-brand-500">
             Knowledge

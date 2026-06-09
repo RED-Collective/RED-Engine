@@ -1,4 +1,5 @@
 import { Outlet, Link } from 'react-router';
+import { FaCog } from 'react-icons/fa';
 
 function App() {
   return (
@@ -17,9 +18,35 @@ function App() {
                 <h1 className="m-auto text-6xl font-black">The RED Engine</h1>
               </div>
             </Link>
-            <nav className="flex mx-32">
-              <a className="m-auto ">Articles</a>
+            <nav className="flex mx-64 text-3xl font-light gap-16">
+              <Link
+                to={{
+                  pathname: '/articles',
+                }}
+                className="m-auto flex flex-col border-b-2 border-white hover:border-brand-400 hover:border-b-2 transition duration-300 ease-in-out"
+              >
+                Articles
+              </Link>
+              <Link
+                to={{
+                  pathname: '/network',
+                }}
+                className="m-auto flex flex-col border-b-2 border-white hover:border-brand-400 hover:border-b-2 transition duration-300 ease-in-out"
+              >
+                Network
+              </Link>
+              <Link
+                to={{
+                  pathname: '/about',
+                }}
+                className="m-auto flex flex-col border-b-2 border-white hover:border-brand-400 hover:border-b-2 transition duration-300 ease-in-out"
+              >
+                About
+              </Link>
             </nav>
+            <div className="flex flex-1">
+              <FaCog className="ml-auto my-auto mr-8 text-4xl text-right justify-self-end self-end" />
+            </div>
           </div>
         </div>
         <div className="flex flex-1 flex-row">
