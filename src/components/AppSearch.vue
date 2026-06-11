@@ -29,9 +29,9 @@ watch(results, () => {
   activeIndex.value = 0
 })
 
-function go(path: string) {
+function go(filePath: string) {
   emit('close')
-  router.push(withLeadingSlash(path))
+  router.push(withLeadingSlash(filePath))
 }
 
 function onKeydown(e: KeyboardEvent) {
@@ -45,7 +45,7 @@ function onKeydown(e: KeyboardEvent) {
     activeIndex.value = Math.max(activeIndex.value - 1, 0)
   } else if (e.key === 'Enter') {
     const hit = results.value[activeIndex.value]
-    if (hit) go(hit.path)
+    if (hit) go(hit.file_path)
   }
 }
 </script>
@@ -72,16 +72,21 @@ function onKeydown(e: KeyboardEvent) {
         </div>
 
         <ul v-if="results.length" class="max-h-80 overflow-y-auto py-2">
-          <li v-for="(hit, i) in results" :key="hit.path">
+          <li v-for="(hit, i) in results" :key="hit.file_path">
             <button
               type="button"
-              class="flex w-full flex-col items-start gap-0.5 px-4 py-2 text-left transition-colors"
+              class="flex w-full flex-col items-start gap-0.5 px-4 py-2.5 text-left transition-colors"
               :class="i === activeIndex ? 'bg-imperial-soft' : 'hover:bg-paper-2'"
-              @click="go(hit.path)"
+              @click="go(hit.file_path)"
               @mouseenter="activeIndex = i"
             >
               <span class="font-medium text-ink">{{ hit.title }}</span>
-              <span class="font-mono text-xs text-ink-muted">{{ hit.path }}</span>
+              <span
+                v-if="hit.snippet"
+                class="line-clamp-1 text-xs text-ink-muted"
+                v-html="hit.snippet"
+              ></span>
+              <span v-else class="font-mono text-xs text-ink-muted">{{ hit.file_path }}</span>
             </button>
           </li>
         </ul>

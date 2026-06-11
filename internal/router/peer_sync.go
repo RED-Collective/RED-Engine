@@ -12,7 +12,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,19 @@ import (
 func (h *handler) contentWithManifest(static http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rel := strings.TrimPrefix(r.URL.Path, "/content/")
+		// Never let the raw file server expose dot-prefixed segments (.git,
+		// .obsidian, .meta, .red-signer, …). These hold private config, vault
+		// state, or signing material and must not leak over the public content
+		// route. This also blocks "." / ".." traversal segments. Intentional
+		// assets are served via dedicated routes (/-/assets, /-/branch-meta),
+		// and GenerateManifest already omits hidden dirs, so peer sync is
+		// unaffected.
+		for _, seg := range strings.Split(rel, "/") {
+			if strings.HasPrefix(seg, ".") {
+				http.NotFound(w, r)
+				return
+			}
+		}
 		if rel == "manifest.json" || strings.HasSuffix(rel, "/manifest.json") {
 			prefix := strings.Trim(strings.TrimSuffix(rel, "manifest.json"), "/")
 			m, err := fetch.GenerateManifest(h.store.DataDir(), prefix)
@@ -94,8 +109,18 @@ func (h *handler) pullFromPeer(peerURL, remotePath, dataDir, source string) erro
 		return fmt.Errorf("manifest has no usable bucket")
 	}
 
+	// Local destination folder = the admin's chosen name for this sync (its source
+	// key), falling back to the peer's own bucket name. This makes peer pulls
+	// consistent with git/raw imports (which already fold under SafeFolderSegment of
+	// their source) so content lands under a real, non-hidden, renamable folder
+	// instead of being forced to mirror the source's bucket name. The remote fetch
+	// below still uses `bucket` — that is how the peer addresses its own content.
+	top := bucket
+	if seg := fetch.SafeFolderSegment(source); seg != "" {
+		top = seg
+	}
+
 	// 2. Download every file, verify its hash, and mirror it into data/<bucket>/.
-	var signerFiles []fetch.SignerFile
 	var written []string
 	for relPath, meta := range manifest.Files {
 		clean := filepath.ToSlash(filepath.Clean(relPath))
@@ -127,30 +152,96 @@ func (h *handler) pullFromPeer(peerURL, remotePath, dataDir, source string) erro
 			}
 		}
 
-		// Mirror the note at its manifest path, verbatim.
-		w, err := fetch.WriteNote(dataDir, bucket, clean, content)
+		// Mirror the note at its manifest path, verbatim, under the local folder.
+		w, err := fetch.WriteNote(dataDir, top, clean, content)
 		if err != nil {
 			log.Printf("[Peer] write %q: %v", clean, err)
 			continue
 		}
 		written = append(written, w)
-		signerFiles = append(signerFiles, fetch.SignerFile{
-			Path:      clean,
-			FileHash:  meta.FileHash,
-			PublicKey: meta.PublicKey,
-			Signature: meta.Signature,
-		})
 	}
 
 	// Clean up notes this peer source no longer provides, then record the new set.
+	// The signature, signer key and hash travel inside each note's frontmatter, so
+	// the mirrored files are self-verifying — no signer.db to persist.
 	fetch.ReconcileLedger(dataDir, source, written)
-
-	// 3. Persist signatures so the notes verify and can be re-exported.
-	key := strings.TrimPrefix(strings.TrimPrefix(peerURL, "https://"), "http://")
-	if err := fetch.WriteLocalSignerDB(filepath.Join(dataDir, bucket), key, signerFiles); err != nil {
-		log.Printf("[Peer] persist signatures: %v", err)
-	}
 	return nil
+}
+
+// peerSyncInterval is how often subscribed peer sources (sync_type='peer'
+// startup syncs) are re-pulled. This loop is separate from cmd/red's URL
+// startup-sync ticker because peer syncs resolve the source's LIVE url from its
+// identity and need a navigation rescan after writing new content.
+const peerSyncInterval = 2 * time.Minute
+
+// startPeerSyncLoop launches the background goroutine that periodically re-pulls
+// every peer-anchored startup sync. Call once from router.New.
+func (h *handler) startPeerSyncLoop() {
+	interval := peerSyncInterval
+	if v := os.Getenv("RED_PEER_SYNC_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			interval = time.Duration(n) * time.Second
+		}
+	}
+	go func() {
+		h.syncPeerSources() // boot-time catch-up before the first tick
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.syncPeerSources()
+		}
+	}()
+}
+
+// syncPeerSources re-pulls each sync_type='peer' entry from the source peer's
+// CURRENT address. The peer is found by its stored public key, so a peer that
+// moved to a new tunnel URL (its peers-row url updated by the announce handshake)
+// is still synced — closing the gap where re-pull used to chase a dead URL.
+func (h *handler) syncPeerSources() {
+	entries, err := registry.ListStartupSync()
+	if err != nil {
+		log.Printf("[PeerSync] list startup syncs: %v", err)
+		return
+	}
+	changed := false
+	for _, e := range entries {
+		if e.SyncType != "peer" {
+			continue
+		}
+		if e.PeerKey == "" {
+			log.Printf("[PeerSync] %q predates identity anchoring; re-add it to enable auto re-pull", e.Filename)
+			continue
+		}
+		peer, _ := registry.GetPeerByPublicKey(e.PeerKey)
+		if peer == nil {
+			log.Printf("[PeerSync] source peer %s… for %q is not registered; skipping", shortKey(e.PeerKey), e.Filename)
+			continue
+		}
+		target := peer.URL
+		if target == "" {
+			target = peer.PublicURL
+		}
+		if target == "" {
+			log.Printf("[PeerSync] source peer %q has no contactable url; skipping", peer.Name)
+			continue
+		}
+		if err := h.pullFromPeer(target, e.RemotePath, h.store.DataDir(), e.Filename); err != nil {
+			log.Printf("[PeerSync] re-pull %q from %s failed: %v", e.Filename, target, err)
+			registry.MarkSyncResult(e.Filename, "error", err.Error())
+			continue
+		}
+		log.Printf("[PeerSync] re-pulled %q from %s", e.Filename, target)
+		registry.MarkSyncResult(e.Filename, "ok", "")
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	if err := h.store.Reload(); err != nil {
+		log.Printf("[PeerSync] store reload: %v", err)
+	}
+	// store.Reload fires the navigation reindex hook, rebuilding the folder
+	// tree/counts; no explicit ScanDataDirectories needed here.
 }
 
 // syncVerifyContext domain-separates the sync identity proof so a node-key

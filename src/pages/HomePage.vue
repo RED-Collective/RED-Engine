@@ -1,37 +1,41 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
-import type { NavNode, RecentFile, NodeInfo, TagCount } from '../types/api'
+import { ref, computed, onMounted } from 'vue'
+import type { NavNode, RecentFile, TagCount } from '../types/api'
 import { fetchTopLevel } from '../api/navigation'
 import { fetchRecentFiles } from '../api/content'
-import { fetchNodeInfo } from '../api/node'
+import { fetchNodeInfo, fetchPublicPeers } from '../api/node'
 import { fetchTags } from '../api/tags'
 import { describe } from '../lib/branding'
 import SectionCard from '../components/SectionCard.vue'
 import ArticleListItem from '../components/ArticleListItem.vue'
+import NodeCard from '../components/NodeCard.vue'
+import type { NodeInfo, Peer } from '../types/api'
 
 const sections = ref<NavNode[]>([])
 const recent = ref<RecentFile[]>([])
 const nodeInfo = ref<NodeInfo | null>(null)
-// Top tags shown as a teaser cloud on the home page; full list lives at /tags.
+const peers = ref<Peer[]>([])
 const tags = ref<TagCount[]>([])
 const loading = ref(true)
 const error = ref<string | null>(null)
 
+const onlinePeers = computed(() => peers.value.filter((p) => p.is_online))
+
 onMounted(async () => {
   try {
-    const [secs, files, info, tagList] = await Promise.allSettled([
+    const [secs, files, info, peerList, tagList] = await Promise.allSettled([
       fetchTopLevel(),
       fetchRecentFiles(5),
       fetchNodeInfo(),
+      fetchPublicPeers(),
       fetchTags(),
     ])
     if (secs.status === 'fulfilled') {
-      // /api/navigation (no path) returns ALL nodes flat, including nested ones.
-      // Keep only true top-level branches (path has no "/").
       sections.value = secs.value.filter((n) => !n.path.includes('/'))
     }
     if (files.status === 'fulfilled') recent.value = files.value
     if (info.status === 'fulfilled') nodeInfo.value = info.value
+    if (peerList.status === 'fulfilled') peers.value = peerList.value
     if (tagList.status === 'fulfilled') tags.value = tagList.value.slice(0, 20)
     if (secs.status === 'rejected') error.value = 'Failed to load navigation.'
   } finally {
@@ -59,11 +63,33 @@ onMounted(async () => {
     <p v-else-if="error" class="text-imperial">{{ error }}</p>
 
     <!-- Collections -->
-    <section v-if="sections.length">
+    <section>
       <h2 class="mb-4 font-serif text-2xl font-bold text-ink">Collections</h2>
-      <div class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div v-if="sections.length" class="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
         <SectionCard v-for="s in sections" :key="s.path" :node="s" />
       </div>
+      <p v-else-if="!loading" class="rounded-xl border border-line bg-white p-6 text-center text-sm text-ink-muted">
+        No collections yet. Add content to your <span class="font-mono">data/</span> directory to get started.
+      </p>
+    </section>
+
+    <!-- Nodes -->
+    <section>
+      <div class="mb-4 flex items-baseline justify-between">
+        <h2 class="font-serif text-2xl font-bold text-ink">
+          Nodes
+          <span v-if="peers.length" class="ml-2 text-base font-normal text-ink-muted">
+            {{ onlinePeers.length }}/{{ peers.length }} online
+          </span>
+        </h2>
+        <RouterLink to="/-/nodes" class="text-sm text-imperial hover:underline">View all &rarr;</RouterLink>
+      </div>
+      <div v-if="peers.length" class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        <NodeCard v-for="peer in peers" :key="peer.url" :peer="peer" />
+      </div>
+      <p v-else-if="!loading" class="rounded-xl border border-line bg-white p-6 text-center text-sm text-ink-muted">
+        No peers connected yet.
+      </p>
     </section>
 
     <!-- Tags -->

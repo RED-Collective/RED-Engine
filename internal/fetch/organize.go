@@ -3,32 +3,28 @@ package fetch
 import (
 	"crypto/sha256"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // OrganizeVault mirrors a vault checkout at srcDir verbatim into
 // dataDir/<source>/<path-within-vault>. The source's own folder structure IS the
-// published structure — there is no taxonomy and no library/manual bucket. The
-// vault's signer.db is copied alongside (under dataDir/<source>/.red-feather--<source>)
-// so notes keep verifying (verification is keyed by content hash, so on-disk
-// location is irrelevant) and so the content can be re-exported to peers. The tree
-// is merged in place (MkdirAll only creates missing segments) and a note is
-// rewritten only when its content differs (idempotent). source keys this sync's
-// ledger so a later re-sync cleans up notes it no longer provides AND names the
-// top-level folder; pass "" only for untracked writes to the data root.
+// published structure — there is no taxonomy and no library/manual bucket. Each
+// note carries its signature in its own frontmatter (red_author/red_sig/red_hash),
+// so the mirrored notes are self-verifying — nothing extra is copied. The tree is
+// merged in place (MkdirAll only creates missing segments) and a note is rewritten
+// only when its content differs (idempotent). source keys this sync's ledger so a
+// later re-sync cleans up notes it no longer provides AND names the top-level
+// folder; pass "" only for untracked writes to the data root.
 func OrganizeVault(srcDir, dataDir, source string) error {
-	signerDBPath := findSignerDB(srcDir)
-	hasVault := signerDBPath != ""
-
 	// Each sync lands under its own top-level folder named after the source so a
 	// repo's notes stay grouped and attributed. A blank/unsafe source writes to
 	// the data root.
-	top := sourceFolder(source)
+	top := SafeFolderSegment(source)
 
 	var written []string
 	err := filepath.WalkDir(srcDir, func(p string, d os.DirEntry, err error) error {
@@ -41,7 +37,12 @@ func OrganizeVault(srcDir, dataDir, source string) error {
 			}
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
+		// Mirror notes AND the image assets they embed. Obsidian stores attachments
+		// (e.g. "Pasted image ….png") alongside or near the note and references them
+		// with ![[name]]; copying only .md silently dropped every image, so embeds
+		// 404'd and attachment-only folders vanished. Everything else (PDFs, binaries)
+		// is still skipped — see IsSyncableAsset.
+		if !strings.EqualFold(filepath.Ext(d.Name()), ".md") && !IsSyncableAsset(d.Name()) {
 			return nil
 		}
 		content, readErr := os.ReadFile(p)
@@ -66,29 +67,41 @@ func OrganizeVault(srcDir, dataDir, source string) error {
 	}
 
 	// Clean up notes this source wrote before but no longer provides, then record
-	// the new set.
+	// the new set. Signatures live in each note's frontmatter, so there is nothing
+	// else to preserve.
 	ReconcileLedger(dataDir, source, written)
-
-	// Preserve the signature data so the mirrored notes still verify and so the
-	// content can be re-exported to peers. Keyed by sync source so several vaults
-	// under one data root keep their own signer.db.
-	if hasVault {
-		dir := dataDir
-		if top != "" {
-			dir = filepath.Join(dataDir, top)
-		}
-		if cErr := copySignerDB(signerDBPath, dir, source); cErr != nil {
-			log.Printf("[Organize] preserve signer.db: %v", cErr)
-		}
-	}
 	return nil
 }
 
-// sourceFolder turns a sync source/label into a safe single path segment used as
-// the sync's top-level folder (dataDir/<sourceFolder>/…). It returns "" when the
-// source is empty or would resolve to a hidden or relative segment, which writes
-// to the data root instead.
-func sourceFolder(source string) string {
+// syncableImageExts is the set of image extensions mirrored alongside notes during a
+// sync. Restricted to images on purpose: it covers Obsidian's embedded attachments
+// without syncing arbitrary binaries from a content repo.
+var syncableImageExts = map[string]bool{
+	".png":  true,
+	".jpg":  true,
+	".jpeg": true,
+	".gif":  true,
+	".svg":  true,
+	".webp": true,
+	".bmp":  true,
+	".ico":  true,
+}
+
+// IsSyncableAsset reports whether name is a non-markdown asset that a sync should
+// mirror (currently: images embedded by notes). It is the single source of truth
+// shared by OrganizeVault (git) and GenerateManifest (peer) so both paths transfer
+// exactly the same set of files.
+func IsSyncableAsset(name string) bool {
+	return syncableImageExts[strings.ToLower(filepath.Ext(name))]
+}
+
+// SafeFolderSegment turns a sync source/label into a safe single path segment used
+// as the sync's top-level folder (dataDir/<segment>/…). It returns "" when the
+// source is empty or would resolve to a hidden or relative segment. It strips any
+// directory part (so "a/b" → "b") and leading dots (so it never creates a hidden
+// dir), which is exactly the guard a caller needs before using an admin-supplied
+// name as a destination folder.
+func SafeFolderSegment(source string) string {
 	seg := strings.TrimSpace(filepath.Base(source))
 	seg = strings.TrimLeft(seg, ".") // never create a hidden directory
 	if seg == "" || seg == ".." {
@@ -103,7 +116,7 @@ func sourceFolder(source string) string {
 // (not written to the data root) so the navigation scanner, which only indexes
 // top-level directories, can see it.
 func OrganizeLooseMarkdown(dataDir, source, fileName string, content []byte) error {
-	w, err := WriteNote(dataDir, sourceFolder(source), fileName, content)
+	w, err := WriteNote(dataDir, SafeFolderSegment(source), fileName, content)
 	if err != nil {
 		return err
 	}
@@ -126,49 +139,59 @@ func WriteNote(dataDir, top, relPath string, content []byte) (string, error) {
 	return rel, nil
 }
 
-// writeIfChanged writes content to dest only when dest is missing or differs.
-// Skipping no-op writes keeps re-syncs idempotent and avoids churning mtimes
-// (which would needlessly retrigger the file watcher).
+// hasSignature reports whether content carries a non-empty red_sig frontmatter
+// field — i.e. it is a signed note rather than plain/unsigned content.
+func hasSignature(b []byte) bool {
+	return FrontmatterValue(b, "red_sig") != ""
+}
+
+// parseSignedAt reads red_signed_at from content. red-feather writes RFC1123
+// ("Mon, 02 Jan 2006 15:04:05 MST"); the ISO layout is a fallback for older
+// exports. Returns zero when absent or unparseable.
+func parseSignedAt(b []byte) time.Time {
+	v := FrontmatterValue(b, "red_signed_at")
+	if v == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC1123, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, v); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+// writeIfChanged writes content to dest only when dest is missing or differs,
+// with conflict resolution that protects already-published content:
+//
+//   - Identical content (same SHA256) is a no-op, keeping re-syncs idempotent and
+//     avoiding mtime churn (which would needlessly retrigger the file watcher).
+//   - A signed note on disk is NEVER overwritten by unsigned content. A federated
+//     or re-imported source that ships an older, unsigned export of a note can no
+//     longer clobber the signed copy.
+//   - Between two signed notes, the one with the newer red_signed_at wins; a stale
+//     peer replaying an older signed version cannot roll the note back.
+//
+// Unsigned-vs-unsigned and any case without usable timestamps fall through to
+// last-writer-wins, unchanged from the original behaviour. Images (no frontmatter)
+// are treated as unsigned on both sides and so still update on content change.
 func writeIfChanged(dest string, content []byte) error {
 	if existing, err := os.ReadFile(dest); err == nil {
 		if sha256.Sum256(existing) == sha256.Sum256(content) {
+			return nil // identical — skip
+		}
+		// Never overwrite a signed note with an unsigned one.
+		if hasSignature(existing) && !hasSignature(content) {
+			return nil
+		}
+		// Between two signed notes, keep the newer red_signed_at.
+		existingAt := parseSignedAt(existing)
+		incomingAt := parseSignedAt(content)
+		if !existingAt.IsZero() && !incomingAt.IsZero() && !incomingAt.After(existingAt) {
 			return nil
 		}
 	}
 	return os.WriteFile(dest, content, 0o644)
-}
-
-// findSignerDB returns the path to the first signer.db located under a `.red-*`
-// directory inside srcDir, or "" if none exists.
-func findSignerDB(srcDir string) string {
-	var found string
-	filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || found != "" || d.IsDir() {
-			return nil
-		}
-		if d.Name() == "signer.db" && strings.HasPrefix(filepath.Base(filepath.Dir(path)), ".red-") {
-			found = path
-			return filepath.SkipAll
-		}
-		return nil
-	})
-	return found
-}
-
-// copySignerDB copies the vault's signer.db into a stable hidden directory under
-// bucketDir so its signatures keep loading after a temporary checkout is removed.
-// The directory is keyed by the sync source so several vaults merged into one
-// bucket coexist; the store loads every signer.db under any `.red-*` dir.
-func copySignerDB(srcPath, bucketDir, key string) error {
-	key = sanitizeKey(key)
-	if key == "" {
-		key = "default"
-	}
-	destDir := filepath.Join(bucketDir, ".red-feather--"+key)
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return err
-	}
-	return copyFile(srcPath, filepath.Join(destDir, "signer.db"))
 }
 
 // sanitizeKey keeps a source/pubkey usable as a single path segment.
@@ -184,21 +207,4 @@ func sanitizeKey(s string) string {
 		out = out[:32]
 	}
 	return out
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }

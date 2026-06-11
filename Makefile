@@ -12,7 +12,7 @@ vite:
 
 build:
 	npx vite build
-	go build -o ./red ./cmd/red
+	go build -ldflags "-X github.com/RED-Collective/red-engine/internal/router.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ./red ./cmd/red
 
 run: build
 	./red

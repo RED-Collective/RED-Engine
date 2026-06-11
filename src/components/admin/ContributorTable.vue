@@ -1,8 +1,24 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { Contributor } from '../../types/api'
 
 defineProps<{ contributors: Contributor[]; busyKey: string }>()
 const emit = defineEmits<{ revoke: [publicKey: string] }>()
+
+// One-click copy of a contributor's public key, with brief "Copied!" feedback —
+// so an admin never has to hand-select a 64-char hex string out of the database.
+const copiedKey = ref('')
+async function copyKey(key: string) {
+  try {
+    await navigator.clipboard.writeText(key)
+    copiedKey.value = key
+    setTimeout(() => {
+      if (copiedKey.value === key) copiedKey.value = ''
+    }, 1500)
+  } catch {
+    /* clipboard unavailable */
+  }
+}
 </script>
 
 <template>
@@ -18,7 +34,17 @@ const emit = defineEmits<{ revoke: [publicKey: string] }>()
       <tbody>
         <tr v-for="c in contributors" :key="c.public_key" class="border-b border-line last:border-0">
           <td class="px-4 py-3 font-medium text-ink">{{ c.name }}</td>
-          <td class="px-4 py-3"><span class="break-all font-mono text-xs text-ink-mid">{{ c.public_key }}</span></td>
+          <td class="px-4 py-3">
+            <div class="flex items-center gap-2">
+              <span class="break-all font-mono text-xs text-ink-mid">{{ c.public_key }}</span>
+              <button
+                type="button"
+                class="shrink-0 rounded border border-line px-2 py-0.5 text-xs text-ink-muted transition-colors hover:bg-paper-2"
+                :title="copiedKey === c.public_key ? 'Copied!' : 'Copy public key'"
+                @click="copyKey(c.public_key)"
+              >{{ copiedKey === c.public_key ? '✓ Copied' : '📋 Copy' }}</button>
+            </div>
+          </td>
           <td class="px-4 py-3 text-right">
             <button
               type="button"

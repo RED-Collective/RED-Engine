@@ -19,10 +19,12 @@ services:
       - RED_WEBHOOK_SECRET=${RED_WEBHOOK_SECRET:-}
       - RED_ADDR=${RED_ADDR:-:8080}
       - RED_DATA_DIR=${RED_DATA_DIR:-data}
+      - RED_STATE_DIR=/app/state
       - RED_SITE_NAME=${RED_SITE_NAME:-}
       - RED_NODE_NAME=${RED_NODE_NAME:-}
     volumes:
       - ./data:/app/data:rw
+      - ./state:/app/state:rw
       - ./config.json:/app/config.json:rw
     user: "${UID:-1000}:1000"
 

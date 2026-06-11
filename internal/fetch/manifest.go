@@ -2,7 +2,6 @@ package fetch
 
 import (
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -39,7 +38,6 @@ func GenerateManifest(dataDir, prefix string) (ContentManifest, error) {
 	bucketDir := filepath.Join(dataDir, bucket)
 	walkRoot := filepath.Join(dataDir, filepath.FromSlash(prefix))
 
-	sigs := loadBucketSignatures(bucketDir)
 	files := make(map[string]ManifestFile)
 
 	filepath.WalkDir(walkRoot, func(path string, d os.DirEntry, err error) error {
@@ -52,7 +50,11 @@ func GenerateManifest(dataDir, prefix string) (ContentManifest, error) {
 			}
 			return nil
 		}
-		if !strings.EqualFold(filepath.Ext(d.Name()), ".md") {
+		// List notes AND the image assets they embed, so a peer pull transfers both.
+		// Images carry no signature; the manifest's FileHash gives transfer integrity,
+		// the same as for a note (whose authenticity is verified from its frontmatter
+		// after pulling).
+		if !strings.EqualFold(filepath.Ext(d.Name()), ".md") && !IsSyncableAsset(d.Name()) {
 			return nil
 		}
 		content, readErr := os.ReadFile(path)
@@ -63,13 +65,11 @@ func GenerateManifest(dataDir, prefix string) (ContentManifest, error) {
 		if relErr != nil {
 			return nil
 		}
+		// The signature/pubkey live inside the note's frontmatter (which the puller
+		// downloads verbatim), so the manifest only needs the file hash for transfer
+		// integrity — peers verify authenticity from the header after pulling.
 		sum := sha256.Sum256(content)
-		h := hex.EncodeToString(sum[:])
-		mf := ManifestFile{FileHash: h}
-		if s, ok := sigs[h]; ok {
-			mf.PublicKey, mf.Signature = s.PublicKey, s.Signature
-		}
-		files[filepath.ToSlash(rel)] = mf
+		files[filepath.ToSlash(rel)] = ManifestFile{FileHash: hex.EncodeToString(sum[:])}
 		return nil
 	})
 
@@ -78,38 +78,3 @@ func GenerateManifest(dataDir, prefix string) (ContentManifest, error) {
 		Files:  files,
 	}, nil
 }
-
-// loadBucketSignatures aggregates files(file_hash → pubkey/sig) from every
-// signer.db under a `.red-*` dir in the bucket, so signatures can be attached to
-// notes by content hash regardless of their on-disk path.
-func loadBucketSignatures(bucketDir string) map[string]ManifestFile {
-	out := make(map[string]ManifestFile)
-	filepath.WalkDir(bucketDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if d.Name() != "signer.db" || !strings.HasPrefix(filepath.Base(filepath.Dir(path)), ".red-") {
-			return nil
-		}
-		db, e := sql.Open("sqlite", path)
-		if e != nil {
-			return nil
-		}
-		rows, e := db.Query(`SELECT file_hash, public_key, signature FROM files`)
-		if e != nil {
-			db.Close()
-			return nil
-		}
-		for rows.Next() {
-			var fh, pk, sig string
-			if rows.Scan(&fh, &pk, &sig) == nil && fh != "" {
-				out[fh] = ManifestFile{FileHash: fh, PublicKey: pk, Signature: sig}
-			}
-		}
-		rows.Close()
-		db.Close()
-		return nil
-	})
-	return out
-}
-

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/RED-Collective/red-engine/internal/models"
+	"github.com/RED-Collective/red-engine/internal/navigation"
 	"github.com/RED-Collective/red-engine/internal/registry"
 )
 
@@ -276,17 +277,20 @@ func (h *handler) contentAPI(w http.ResponseWriter, r *http.Request) {
 		Path  string `json:"path"`
 	}
 	type response struct {
-		Title             string      `json:"title"`
-		BodyHTML          string      `json:"body_html"`
-		VerificationState string      `json:"verification_state"`
-		VerificationError string      `json:"verification_error,omitempty"`
-		SignerKey         string      `json:"signer_key,omitempty"`
-		Hash              string      `json:"hash"`
-		Tags              []string    `json:"tags,omitempty"`
-		Crumb             []crumbJSON `json:"crumb"`
-		PrevArticle       *articleRef `json:"prev_article"`
-		NextArticle       *articleRef `json:"next_article"`
-		IsDirectory       bool        `json:"is_directory"`
+		Title             string                   `json:"title"`
+		BodyHTML          string                   `json:"body_html"`
+		VerificationState string                   `json:"verification_state"`
+		VerificationError string                   `json:"verification_error,omitempty"`
+		SignerKey         string                   `json:"signer_key,omitempty"`
+		Author            string                   `json:"author,omitempty"`    // self-asserted signer display name (red_author_name)
+		SignedAt          string                   `json:"signed_at,omitempty"` // human-readable signature date (red_signed_at)
+		Hash              string                   `json:"hash"`
+		Tags              []string                 `json:"tags,omitempty"`
+		Crumb             []crumbJSON              `json:"crumb"`
+		PrevArticle       *articleRef              `json:"prev_article"`
+		NextArticle       *articleRef              `json:"next_article"`
+		IsDirectory       bool                     `json:"is_directory"`
+		Backlinks         []navigation.BacklinkRef `json:"backlinks"` // always present (possibly empty) so clients can rely on the key
 	}
 
 	// For directory defaults (RED_KNOWLEDGE), derive title from the directory name
@@ -302,10 +306,23 @@ func (h *handler) contentAPI(w http.ResponseWriter, r *http.Request) {
 		VerificationState: art.VerificationState,
 		VerificationError: art.VerificationError,
 		SignerKey:         art.SignerKey,
+		Author:            art.SignerName,
+		SignedAt:          art.SignedAt,
 		Hash:              art.Hash,
 		Tags:              art.Tags,
 		IsDirectory:       isDirectory,
 		Crumb:             make([]crumbJSON, 0, len(crumbs)),
+		Backlinks:         []navigation.BacklinkRef{},
+	}
+	// Backlinks use art.Path (not the request path) so the RED_KNOWLEDGE
+	// directory fallback gets the backlinks of the note actually served. A
+	// backlink failure never fails the note response.
+	if h.navService != nil {
+		if bl, err := h.navService.Backlinks(strings.TrimPrefix(art.Path, "/")); err != nil {
+			log.Printf("contentAPI: backlinks for %s: %v", art.Path, err)
+		} else if bl != nil {
+			resp.Backlinks = bl
+		}
 	}
 	for _, c := range crumbs {
 		resp.Crumb = append(resp.Crumb, crumbJSON{Label: c.Label, Path: c.Path})

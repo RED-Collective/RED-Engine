@@ -1,4 +1,4 @@
-import type { AdminPeer, Contributor, StartupSync } from '../types/api'
+import type { AdminPeer, Contributor, DetectedSigner, StartupSync } from '../types/api'
 import { getJSON, send, getText, adminHeaders } from './http'
 
 // --- Auth ---------------------------------------------------------------
@@ -78,6 +78,16 @@ export async function addContributor(
     headers: adminHeaders(token, true),
     body: JSON.stringify({ name, public_key: publicKey }),
   })
+}
+
+// GET /-/admin/contributors/detected → signer keys seen in content, so the admin
+// can add one to the keyring without hand-copying a hex key from the database.
+export async function listDetectedSigners(token: string): Promise<DetectedSigner[]> {
+  return (
+    (await getJSON<DetectedSigner[] | null>('/-/admin/contributors/detected', {
+      headers: adminHeaders(token),
+    })) ?? []
+  )
 }
 
 export async function revokeContributor(token: string, publicKey: string): Promise<void> {

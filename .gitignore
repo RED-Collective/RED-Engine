@@ -7,6 +7,9 @@ data/
 data1/
 .nodetest/
 registry.db
+nav.db
+nav.db-shm
+nav.db-wal
 .github/discord.yml
 podman-flush.sh
 
@@ -15,7 +18,7 @@ Project-RED-main.zip
 node_modules/
 tmp/
 internal/router/static/dist/
-
+config.json
 .DS_Store
 Thumbs.db
 
@@ -38,3 +41,15 @@ Thumbs.db
 # local two-node demo (scripts/two-node.sh)
 .red-demo/
 /red
+.red-nodes/
+
+# test-harness state and artifacts
+# (three-node-test.sh, local-rediscovery-test.sh, node-test.sh, manual node runs)
+/.nodetest*/
+/.localredisc/
+/state/
+/vault-a/
+/config1.json
+/contributors.json
+/tunnel-url
+*.pid

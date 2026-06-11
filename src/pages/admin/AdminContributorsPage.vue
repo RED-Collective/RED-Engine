@@ -1,12 +1,19 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import type { Contributor } from '../../types/api'
+import type { Contributor, DetectedSigner } from '../../types/api'
 import { useAdmin } from '../../composables/useAdmin'
-import { listContributors, addContributor, revokeContributor } from '../../api/admin'
+import {
+  listContributors,
+  listDetectedSigners,
+  addContributor,
+  revokeContributor,
+} from '../../api/admin'
 import ContributorTable from '../../components/admin/ContributorTable.vue'
+import DetectedSignersTable from '../../components/admin/DetectedSignersTable.vue'
 
 const { token } = useAdmin()
 const contributors = ref<Contributor[]>([])
+const detected = ref<DetectedSigner[]>([])
 const loading = ref(true)
 const busyKey = ref('')
 const status = ref<string | null>(null)
@@ -19,7 +26,14 @@ const adding = ref(false)
 async function refreshList() {
   loading.value = true
   try {
-    contributors.value = await listContributors(token.value)
+    // Load the keyring and the detected signers together so the "already trusted"
+    // flags stay consistent across both tables.
+    const [keyring, signers] = await Promise.all([
+      listContributors(token.value),
+      listDetectedSigners(token.value),
+    ])
+    contributors.value = keyring
+    detected.value = signers
   } catch (e) {
     errorMsg.value = e instanceof Error ? e.message : 'Failed to load contributors'
   } finally {
@@ -28,6 +42,23 @@ async function refreshList() {
 }
 
 onMounted(refreshList)
+
+// One-click: trust a detected signer, pre-filling the admin label from the note's
+// self-asserted name. The pubkey is the identity; the name is just a convenience.
+async function onAddDetected(signer: DetectedSigner) {
+  errorMsg.value = null
+  status.value = null
+  busyKey.value = signer.public_key
+  try {
+    await addContributor(token.value, signer.name, signer.public_key)
+    status.value = `Added ${signer.name || signer.public_key.slice(0, 16) + '…'} to trusted contributors.`
+    await refreshList()
+  } catch (e) {
+    errorMsg.value = e instanceof Error ? e.message : 'Failed to add contributor'
+  } finally {
+    busyKey.value = ''
+  }
+}
 
 async function onAdd() {
   errorMsg.value = null
@@ -101,5 +132,16 @@ async function onRevoke(key: string) {
 
     <p v-if="loading" class="text-ink-muted">Loading&hellip;</p>
     <ContributorTable v-else :contributors="contributors" :busy-key="busyKey" @revoke="onRevoke" />
+
+    <section v-if="!loading" class="space-y-3">
+      <div>
+        <h2 class="font-serif text-xl font-bold text-ink">Detected signers</h2>
+        <p class="text-sm text-ink-muted">
+          Signer keys found in this node's content. Add one to trust it — no need to copy keys by hand.
+          The name is self-asserted by the signer and is only a label; the public key is the identity.
+        </p>
+      </div>
+      <DetectedSignersTable :signers="detected" :busy-key="busyKey" @add="onAddDetected" />
+    </section>
   </div>
 </template>

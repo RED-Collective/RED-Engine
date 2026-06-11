@@ -134,7 +134,11 @@ watch(path, (p) => void load(p), { immediate: true })
             :hash="article.hash"
           />
         </div>
-        <p v-if="article.author" class="mb-4 text-sm text-ink-muted">by {{ article.author }}</p>
+        <p v-if="article.author || article.signed_at" class="mb-4 text-sm text-ink-muted">
+          <span v-if="article.author">by {{ article.author }}</span>
+          <span v-if="article.author && article.signed_at"> · </span>
+          <span v-if="article.signed_at">Signed {{ article.signed_at }}</span>
+        </p>
 
         <div v-if="article.tags?.length" class="mb-6 flex flex-wrap gap-2">
           <RouterLink

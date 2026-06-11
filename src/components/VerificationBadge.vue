@@ -16,23 +16,19 @@ const isSerious = computed(() => !isVerified.value && props.state !== 'unsigned'
 
 const MESSAGES: Record<VerificationState, string> = {
   verified: 'This article was cryptographically signed by a trusted contributor.',
-  unsigned:
-    'This article has no cryptographic signature. Its authenticity cannot be confirmed.',
+  unverified:
+    'This article has a valid signature, but its signer is not in this node’s trusted contributors list.',
   tampered:
     'This article’s content was modified after it was signed. The signature no longer matches.',
-  invalid_sig: 'The signature on this article failed cryptographic verification.',
-  malformed: 'The signature format is invalid or corrupted.',
-  untrusted:
-    'This article was signed by a key that is not in the trusted contributors list.',
+  unsigned:
+    'This article has no cryptographic signature. Its authenticity cannot be confirmed.',
 }
 
 const TITLES: Record<VerificationState, string> = {
   verified: 'Verified',
-  unsigned: 'Unsigned',
+  unverified: 'Unverified',
   tampered: 'Tampered',
-  invalid_sig: 'Invalid signature',
-  malformed: 'Malformed signature',
-  untrusted: 'Untrusted key',
+  unsigned: 'Unsigned',
 }
 
 const detailMessage = computed(() => MESSAGES[props.state])
