@@ -7,6 +7,7 @@ import { BrowserRouter, Routes, Route } from 'react-router';
 import App from './App.tsx';
 import NotFound from './not_found.tsx';
 import MainPage from './pages/main.tsx';
+import Articles from './pages/article.tsx';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -16,6 +17,7 @@ createRoot(document.getElementById('root')!).render(
 
         <Route path="/" element={<App />}>
           <Route index element={<MainPage />} />
+          <Route path="articles" element={<Articles />} />
         </Route>
       </Routes>
     </BrowserRouter>
