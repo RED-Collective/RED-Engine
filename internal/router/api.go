@@ -46,6 +46,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 		title             string
 		path              string
 		signerKey         string
+		author            string
 		verificationState string
 		mtime             time.Time
 	}
@@ -88,6 +89,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 				title:             title,
 				path:              displayPath,
 				signerKey:         art.SignerKey,
+				author:            art.SignerName,
 				verificationState: art.VerificationState,
 				mtime:             mtime,
 			})
@@ -112,6 +114,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 		Title             string `json:"title"`
 		Path              string `json:"path"`
 		SignerKey         string `json:"signer_key,omitempty"`
+		Author            string `json:"author,omitempty"`
 		VerificationState string `json:"verification_state"`
 	}
 
@@ -121,6 +124,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 			Title:             it.title,
 			Path:              it.path,
 			SignerKey:         it.signerKey,
+			Author:            it.author,
 			VerificationState: it.verificationState,
 		})
 	}

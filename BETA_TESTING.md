@@ -1,101 +1,171 @@
-# RED-Engine — Beta Testing Guide (local dev)
+# RED Engine — Beta Testing Guide
 
-This guide is for **local-dev beta testing** of content sync, taxonomy foldering,
-and federation. It assumes you run nodes on your own machine(s); it is **not** a
-production/hardening guide (see `BULLETPROOFING_ROADMAP.md` before any public
-exposure — token rotation, timeouts, rate limiting, etc. are intentionally *not*
-done yet).
+This guide covers local and federated testing of RED Engine. It is not a
+production-hardening guide — see `BULLETPROOFING_ROADMAP.md` before any public
+exposure (rate limiting, token rotation, request timeouts, etc. are not yet done).
 
-## 1. Start a two-node federation
+---
+
+## 1. Start a node
+
+### Single node
+
+```bash
+make run
+```
+
+Starts one node at `http://localhost:8080` using `data/` as the content directory.
+The admin token defaults to `dev-token` (set `RED_ADMIN_TOKEN` to override).
+
+### Two-node federation
 
 ```bash
 make demo
 ```
 
-This builds the binary and starts:
+| Node | URL                   | Content dir | Admin token   |
+|------|-----------------------|-------------|---------------|
+| A    | http://localhost:8080 | `data/`     | `dev-token-A` |
+| B    | http://localhost:8081 | `data1/`    | `dev-token-B` |
 
-| Node | URL                     | Content dir | Admin token (default) |
-|------|-------------------------|-------------|-----------------------|
-| A    | http://localhost:8080   | `data/`     | `dev-token-A`         |
-| B    | http://localhost:8081   | `data1/`    | `dev-token-B`         |
+Each node gets a separate identity and `registry.db` under `.red-demo/stateA` /
+`.red-demo/stateB`. `Ctrl-C` stops both.
 
-Each node gets its own identity + `registry.db` under `.red-demo/state{A,B}` (via
-`RED_STATE_DIR`). Override tokens with `RED_ADMIN_TOKEN_A` / `RED_ADMIN_TOKEN_B`.
-`Ctrl-C` stops both. (Single node: `make run`.)
+---
 
-## 2. Classify a vault in RED-Feather
+## 2. Content — folders as truth
 
-A **vault = one knowledge branch.** In Obsidian (RED-Feather plugin) or via the
-`red-feather` CLI, set the vault's classification — this writes
-`signer.db.vault_metadata`:
+RED Engine serves whatever is in `data/`. There is no taxonomy classification, no
+vault type, no branch UIDs. **The folder structure is the taxonomy.**
 
-- `vault_type`: `library` (taxonomy-filed) or `manual` (guide).
-- `taxonomy_uid`: a core node (`c<id>`, see `--list-taxonomy`) or a **community
-  branch** you create with `--create-branch --parent-uid <uid> --name <Name>`
-  (its signed JSON goes into `branch_record`).
+- Drop a folder of Markdown files into `data/MyTopic/` → it becomes a Collection
+  card on the home page.
+- Nest folders freely: `data/Science/Physics/Mechanics/` → three levels of nav.
+- A `RED_KNOWLEDGE.md` in any folder sets that folder's description.
+- Images referenced via Obsidian `![[image.png]]` wikilinks are served automatically.
 
-The engine reads this as **authoritative** — every note in the vault is filed under
-that branch, regardless of any per-file `red_taxonomy_uid` frontmatter (which can be
-stale).
+### Import content
 
-## 3. Sync content onto a node
+Go to `/-/admin` → **Import**:
 
-On a node's `/-/admin` → **Import**:
+- **Git URL** (ending in `.git`): the engine clones the repo and mirrors it under
+  `data/<destination-name>/`.
+- **Raw URL** (a single Markdown file): downloaded once and stored directly.
+- **Peer sync**: pull from a connected peer node (see section 4).
 
-- **Git/URL import:** paste the vault's git URL. The engine clones it, reads the
-  classification, registers any community branches, and files notes under
-  `data/<vault_type>/<root…leaf>/`. Example: a `library` vault on the `api` branch
-  (under Web Development) →
-  `data/library/applied-sciences/computer-science/web-development/api/`.
-- **Peer sync:** set Peer URL = the other node, Remote path = a bucket (`library`)
-  or a sub-branch path. The puller fetches that node's manifest, registers the
-  branches, and mirrors the same branch→leaf tree locally.
+Imports are tracked in the registry and re-synced every minute.
 
-## 4. Make synced content **verify** (manual trust step)
+---
 
-Synced notes show **"Untrusted Key / Unverified"** until you trust their author —
-this is expected in beta (trust is manual by design for now).
+## 3. Sign notes with RED-Feather
 
-1. Find the note's **author public key**. red-engine now surfaces it: the
-   `GET /api/content?path=…` response includes `author_key` (and
-   `verification_error`) for any signed note. (Also available via red-feather's
-   "copy public key" or the note's `red_author` frontmatter line.)
-2. On the node: `/-/admin` → **Contributors** → **Add** → paste the pubkey + a name.
-3. Reload — the note now renders **Verified** (the signature is checked against the
-   trusted key; tampering shows as "Hash Mismatch").
+RED-Feather is the signing CLI / Obsidian plugin. Each note it signs gets these
+frontmatter fields written in-place:
 
-> Peer-gossip authors are **not** auto-trusted. You trust each author explicitly.
+```yaml
+red_author: <base64 ed25519 public key>
+red_author_name: Alice
+red_signed_at: Mon, 02 Jan 2006 15:04:05 MST
+red_hash: <sha256 of body>
+red_sig: <ed25519 signature>
+```
 
-## 5. Reclassify / remove (now safe)
+The engine's 4-state verification system:
 
-- **Reclassify a vault** (e.g. you moved it from Web Development to a new `api`
-  branch) and re-sync: the engine cleans up the note's old branch location and
-  files it under the new one — no leftover duplicates. (Per-source *sync ledger*.)
-- **Remove a tracked sync** with "delete local files": deletes **only that
-  source's** notes (and its hidden git cache), never the shared bucket that other
-  vaults also write into.
+| State        | Meaning                                           |
+|--------------|---------------------------------------------------|
+| `verified`   | Valid signature by a key in this node's keyring   |
+| `unverified` | Valid signature, but signer key not yet trusted   |
+| `tampered`   | Signature present but body-hash mismatch          |
+| `unsigned`   | No signature in frontmatter                       |
 
-## 6. End-to-end smoke (what to test)
+### Trust an author
 
-1. `make demo`.
-2. Node A: import a RED-Feather vault → confirm the chain at
-   `data/<vault_type>/…/<leaf>/`.
-3. Node B: `/-/admin` → Peers → add `http://localhost:8080`; then Import → peer sync
-   `library` → B reproduces the same tree (and the community branch appears in B's
-   taxonomy).
-4. On B, trust the author (step 4) → notes verify.
-5. Reclassify the vault in RED-Feather, re-sync A → old-branch copy is gone.
-6. Remove the sync on A with delete-files → only that vault's notes go.
+1. Get the author's public key (from `red_author` frontmatter, or RED-Feather's
+   "copy public key" button, or the admin panel's **Detected Signers** list).
+2. `/-/admin` → **Contributors** → **Add** → paste the key + a name.
+3. All notes by that key immediately show as **Verified**.
 
-## Known limitations in this beta
+Peer-gossip authors are never auto-trusted. Trust is always an explicit admin act.
 
-- **No production hardening yet:** no rate limiting, request timeouts, body-size
-  limits, or graceful shutdown; the admin token is read from config/env (rotate
-  before any exposure). Run on trusted/local networks only.
-- **Trust is manual + per-author** (no TOFU, no revocation propagation).
-- **Search** uses the in-memory nav index; the `content_index`/FTS tables exist but
-  are not yet populated (no full-text/tag search).
-- **Sync is additive across sources** within a bucket; cleanup is per-source via the
-  ledger (a manually-deleted file reappears on the next sync of its source).
-- `git` vault syncs do a full re-clone+reload (no per-file delta) — fine at vault
-  scale.
+---
+
+## 4. Federation — connect nodes
+
+### Add a peer
+
+On Node B's `/-/admin` → **Peers** → **Add**:
+- URL: `http://localhost:8080`
+- Peer type: `upstream` (you pull from them) / `downstream` (they push to you) /
+  `mirror` (bidirectional)
+- Import peers: optionally gossip-import A's known peers as well
+
+Node B will verify A's identity via a signed nonce challenge before saving the peer.
+
+### Sync content from a peer
+
+`/-/admin` → **Import** → set Peer URL to the peer's address and Destination to
+the local folder name. The engine uses the peer's signed `/-/sync/manifest` to
+pull only the files you ask for.
+
+### URL rediscovery (cloudflared / dynamic tunnels)
+
+When a node's public URL changes (e.g. a new cloudflared quick-tunnel), it
+announces the new URL to its downstream/mirror peers on startup and on every
+heartbeat (10 min). If both endpoints restart simultaneously, a third peer is
+queried to resolve the new URL. This is automatic.
+
+Set `RED_PUBLIC_URL=https://your-tunnel.trycloudflare.com` before starting the
+node, or write it to `red_public_url` in `config.json`.
+
+---
+
+## 5. Search
+
+Full-text search over all notes is available at `/api/search?q=<query>`. It uses
+SQLite FTS5 and returns up to 20 results with a highlighted snippet:
+
+```json
+[{"file_path": "Science/Physics/note", "title": "Newton's Laws", "snippet": "…<mark>force</mark>…"}]
+```
+
+The search bar in the UI (Cmd/Ctrl+K) uses this endpoint.
+
+---
+
+## 6. Backups
+
+A zip snapshot of `data/` is created automatically on every startup. Up to 10
+snapshots are kept under `<state-dir>/backups/`.
+
+- On-demand: `POST /-/admin/backup` (requires `X-Admin-Token`) → returns
+  `{name, path, size_bytes, created}`.
+- List: `GET /-/admin/backups` → array of existing snapshots, newest first.
+- Restore: `unzip <backup>.zip -d data/` then `POST /-/reload`.
+
+---
+
+## 7. End-to-end smoke checklist
+
+```
+[ ] make demo
+[ ] Node A: drop a folder of .md files into data/ → Collections card appears
+[ ] Node A: POST /-/admin/backup → zip created; GET /-/admin/backups lists it
+[ ] Node B: add Node A as upstream peer → identity challenge succeeds
+[ ] Node B: import from Node A → files appear under data/<dest>/
+[ ] Node B: trust Node A's author key → signed notes show Verified
+[ ] Search: /api/search?q=<word from a note> → returns results
+[ ] Kill Node A; restart with a new RED_PUBLIC_URL; check Node B's peer list
+    updates on the next heartbeat
+```
+
+---
+
+## Known limitations
+
+- No rate limiting or request-size caps (use only on trusted networks).
+- Graceful shutdown is not implemented (SIGTERM terminates immediately).
+- Trust is manual and per-author; there is no revocation propagation across peers.
+- Git syncs do a full re-clone+reload rather than a per-file delta.
+- Sync is additive within a destination folder; a manually-deleted file reappears
+  on the next sync of its source (by design — use the admin Remove to clean up).

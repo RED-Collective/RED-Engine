@@ -195,12 +195,16 @@ func writeEntry(dest, name string, isDir bool, r io.Reader) error {
 		return err
 	}
 
-	out, err := os.Create(target)
+	// Read the entry into memory (bounded by the same 100MB limit as before) and
+	// route it through writeIfChanged rather than os.Create. os.Create always
+	// truncates, so re-extracting an archive blew away whatever was on disk —
+	// bypassing both the SHA256 idempotency check (causing needless mtime churn /
+	// watcher retriggers) and W1's signed-note protection. Going through
+	// writeIfChanged means an archived, unsigned export can no longer clobber a
+	// signed note, and an older signed copy cannot roll back a newer one.
+	content, err := io.ReadAll(io.LimitReader(r, 100*1024*1024)) // 100MB Extracted File Limit
 	if err != nil {
 		return err
 	}
-	defer out.Close()
-
-	_, err = io.Copy(out, io.LimitReader(r, 100*1024*1024)) // 100MB Extracted File Limit
-	return err
+	return writeIfChanged(target, content)
 }

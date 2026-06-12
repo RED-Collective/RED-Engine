@@ -104,6 +104,60 @@ func TestOrganizeVaultIdempotentFavorsNew(t *testing.T) {
 	}
 }
 
+// TestOrganizeVaultMirrorsImages: image attachments embedded by notes are mirrored
+// alongside the .md (the data-loss bug fix), while non-image binaries are skipped.
+func TestOrganizeVaultMirrorsImages(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	mustWrite(t, filepath.Join(src, "Note.md"), "![[Pasted image 1.png]]")
+	mustWrite(t, filepath.Join(src, "Pasted image 1.png"), "PNGDATA")
+	mustWrite(t, filepath.Join(src, "manual.pdf"), "PDF")     // non-image: skipped
+	mustWrite(t, filepath.Join(src, "payload.exe"), "BINARY") // non-image: skipped
+	writeSignerDB(t, src)
+
+	data := filepath.Join(tmp, "data")
+	if err := OrganizeVault(src, data, "vault"); err != nil {
+		t.Fatalf("OrganizeVault: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(data, "vault", "Pasted image 1.png")); err != nil {
+		t.Errorf("embedded image not mirrored: %v", err)
+	}
+	for _, skipped := range []string{"manual.pdf", "payload.exe"} {
+		if _, err := os.Stat(filepath.Join(data, "vault", skipped)); !os.IsNotExist(err) {
+			t.Errorf("non-image %s should be skipped (err=%v)", skipped, err)
+		}
+	}
+}
+
+// TestOrganizeVaultRemovesStaleImage: an image dropped from the source on a re-sync
+// is cleaned up, the same as a stale note — it flows through the ledger.
+func TestOrganizeVaultRemovesStaleImage(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src")
+	data := filepath.Join(tmp, "data")
+
+	mustWrite(t, filepath.Join(src, "Note.md"), "![[diagram.png]]")
+	mustWrite(t, filepath.Join(src, "diagram.png"), "IMG")
+	writeSignerDB(t, src)
+	if err := OrganizeVault(src, data, "vault"); err != nil {
+		t.Fatalf("run1: %v", err)
+	}
+	imgPath := filepath.Join(data, "vault", "diagram.png")
+	if _, err := os.Stat(imgPath); err != nil {
+		t.Fatalf("run1 image missing: %v", err)
+	}
+
+	// Re-sync after the image is removed from the source.
+	os.Remove(filepath.Join(src, "diagram.png"))
+	if err := OrganizeVault(src, data, "vault"); err != nil {
+		t.Fatalf("run2: %v", err)
+	}
+	if _, err := os.Stat(imgPath); !os.IsNotExist(err) {
+		t.Errorf("stale image was not cleaned up on re-sync (err=%v)", err)
+	}
+}
+
 // writeSignerDB creates a minimal signer.db under src/.red-feather/ so the vault is
 // detected as signed (findSignerDB) and its signature data is preserved. The engine
 // no longer reads vault_type, so only the files table is needed.

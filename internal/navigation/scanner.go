@@ -8,14 +8,17 @@ import (
 	"time"
 
 	"github.com/RED-Collective/red-engine/internal/fetch"
+	"github.com/RED-Collective/red-engine/internal/render"
 )
 
 // scanSeen records the folder paths and guide file paths encountered during a
 // single scan so rows for content that has since been deleted, renamed, or
-// re-bucketed can be pruned afterwards.
+// re-bucketed can be pruned afterwards, plus the raw wikilink targets collected
+// per guide so the link graph can be rebuilt once all guides are indexed.
 type scanSeen struct {
 	folders map[string]bool
 	guides  map[string]bool
+	links   []pendingLink
 }
 
 // ScanDataDirectories walks every top-level vault under dataDir and rebuilds the
@@ -54,8 +57,22 @@ func (s *Service) ScanDataDirectories() (*ScanResult, error) {
 		return nil, fmt.Errorf("prune stale nav entries: %w", err)
 	}
 
+	// Rebuild the wikilink edge table from the targets collected during the walk.
+	// Runs after pruneStale so a deleted note can never claim a basename, and
+	// inside the same transaction so readers see either the old graph or the new
+	// one, never a partial state.
+	if err := s.rebuildLinks(tx, seen.links); err != nil {
+		return nil, fmt.Errorf("rebuild link graph: %w", err)
+	}
+
 	if err := s.updateAggregates(tx); err != nil {
 		return nil, fmt.Errorf("update aggregates: %w", err)
+	}
+	// Rebuild the FTS index from the freshly-written nav_guides rows. Doing this
+	// inside the same transaction means readers never see a half-updated index —
+	// they see either the old index or the new one, atomically with the scan.
+	if _, err := tx.Exec(`INSERT INTO nav_fts(nav_fts) VALUES('rebuild')`); err != nil {
+		return nil, fmt.Errorf("rebuild fts index: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit scan tx: %w", err)
@@ -146,6 +163,13 @@ func (s *Service) scanDir(dbtx DBTX, absPath, relPath, contentType string, paren
 		}
 		if err := s.setGuideTags(dbtx, guideID, fetch.FrontmatterTags(content)); err != nil {
 			errs = append(errs, fmt.Sprintf("tag %s: %v", fileRel, err))
+		}
+		// Collect wikilink targets while the content is in memory; edges are
+		// resolved and written in one pass after every guide row exists (see
+		// rebuildLinks). FrontmatterBody mirrors the render source, so a
+		// wikilink inside frontmatter never produces an edge.
+		for _, wt := range render.ExtractWikiTargets(string(fetch.FrontmatterBody(content))) {
+			seen.links = append(seen.links, pendingLink{sourceID: guideID, target: wt.Name, embed: wt.Embed})
 		}
 		guides++
 	}

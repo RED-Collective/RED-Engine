@@ -3,24 +3,22 @@ package router
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 
 	"github.com/RED-Collective/red-engine/internal/node"
 	"github.com/RED-Collective/red-engine/internal/registry"
 )
 
+// Version is injected at build time via -ldflags "-X .../router.Version=vX.Y.Z".
+// Falls back to "dev" when building without the flag (local dev, tests).
+var Version = "dev"
+
 func (h *handler) nodeInfo(w http.ResponseWriter, r *http.Request) {
-	exportedPaths := []string{}
-	entries, err := os.ReadDir(h.store.DataDir())
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				exportedPaths = append(exportedPaths, "/"+entry.Name())
-			}
-		}
+	exportedPaths, _ := readDataDirEntries(h.store.DataDir())
+	if exportedPaths == nil {
+		exportedPaths = []string{}
 	}
 
-	version := "v1.2.0"
+	version := Version
 
 	info := node.GetNodeInfo(h.nodeName(), version, exportedPaths)
 	// Self-reported networking metadata, sourced from node_settings.

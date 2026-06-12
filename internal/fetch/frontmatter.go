@@ -6,6 +6,30 @@ import (
 	"strings"
 )
 
+// FrontmatterBody returns the note content AFTER the leading `---` frontmatter
+// block (the signable body), or the whole content when there is no frontmatter.
+// The signature scheme hashes exactly this, so the engine and red-feather must
+// split identically: block = "---\n" … "\n---\n", body = everything after it.
+func FrontmatterBody(content []byte) []byte {
+	const open = "---\n"
+	s := string(content)
+	if !strings.HasPrefix(s, open) {
+		return content
+	}
+	if i := strings.Index(s[len(open):], "\n---\n"); i != -1 {
+		return []byte(s[len(open)+i+len("\n---\n"):])
+	}
+	return content // no closing delimiter: treat all as body
+}
+
+// FrontmatterValue returns the trimmed value of key inside a note's leading `---`
+// frontmatter block, or "" if absent. Exported for callers (the store) that need
+// non-tag keys such as red_author_name. Self-asserted values (a display name) are
+// hints only, never a trust signal.
+func FrontmatterValue(content []byte, key string) string {
+	return frontmatterValue(content, key)
+}
+
 // frontmatterValue returns the trimmed value of key inside the leading `---`
 // frontmatter block, or "" if the block or key is absent.
 func frontmatterValue(content []byte, key string) string {

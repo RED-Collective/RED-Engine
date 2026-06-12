@@ -183,19 +183,18 @@ cmd_up() {
   url="$(start_tunnel "$n")" || return 1
   ok "Node $n tunnel: $url"
 
-  log "Node $n: starting red (HOME=$home, config=$cfg, dataDir=$data)…"
-  HOME="$home" "$RED_BIN" -config "$cfg" >"$dir/red.log" 2>&1 &
+  # RED_PUBLIC_URL feeds the freshly-minted quick-tunnel URL straight into the
+  # node at boot, so nodeinfo advertises it and the startup announce uses it. This
+  # is the supported override and avoids poking the registry DB directly.
+  log "Node $n: starting red (HOME=$home, config=$cfg, dataDir=$data, public_url=$url)…"
+  HOME="$home" RED_PUBLIC_URL="$url" RED_TUNNEL_TYPE=cloudflare_quick \
+    "$RED_BIN" -config "$cfg" >"$dir/red.log" 2>&1 &
   echo $! > "$dir/red.pid"
 
   if ! wait_http "$(base_url "$n")/-/health" 30; then
     err "node $n did not become healthy (see $dir/red.log)"; return 1
   fi
-  ok "Node $n healthy on $(base_url "$n")"
-
-  # Seed self-reported networking metadata so nodeinfo advertises the tunnel URL.
-  db_set_setting "$data" public_url "$url"
-  db_set_setting "$data" tunnel_type cloudflare_quick
-  ok "Node $n public_url set to $url (identity ${url:+}$(node_pubkey "$n" | cut -c1-16)…)"
+  ok "Node $n healthy on $(base_url "$n") — public_url=$url (key $(node_pubkey "$n" | cut -c1-16)…)"
 }
 
 cmd_down() {
@@ -268,12 +267,9 @@ cmd_reconnect() {
   url2="$(start_tunnel A)" || die "could not start new tunnel for A"
   ok "Node A new tunnel: $url2"
 
-  log "Writing new public_url into A's DB while stopped (so the boot announce uses it)…"
-  db_set_setting "$data" public_url "$url2"
-  db_set_setting "$data" tunnel_type cloudflare_quick
-
-  log "Restarting A → announceStartupURL signs nonce|$url2 and confirms to B…"
-  HOME="$home" "$RED_BIN" -config "$cfg" >"$dir/red.log" 2>&1 &
+  log "Restarting A on the new tunnel → boot announce signs nonce|$url2 and confirms to B…"
+  HOME="$home" RED_PUBLIC_URL="$url2" RED_TUNNEL_TYPE=cloudflare_quick \
+    "$RED_BIN" -config "$cfg" >"$dir/red.log" 2>&1 &
   echo $! > "$dir/red.pid"
   wait_http "$(base_url A)/-/health" 30 || die "A did not come back healthy (see $dir/red.log)"
   ok "Node A back up on $url2"
@@ -304,7 +300,7 @@ cmd_verify() {
   if [ "$seen" = "$expected" ]; then
     ok "B now stores A at $seen"
     printf '%sVERIFY: PASS%s\n' "$c_grn" "$c_rst"
-    warn "Caveat: B's startup_sync row still embeds A's OLD URL (UpdatePeerURL touches the peers table only); peer re-verification works, automatic file re-pull from the new URL does not."
+    log "Peer re-verification AND automatic content re-pull now follow the new URL: B's peer startup-sync is anchored to A's identity (sync_type=peer + peer_key), so the periodic peer-sync loop re-pulls from A's current address. (Reciprocal registration also means an upstream learns its downstream automatically on add.)"
     return 0
   else
     err "B stores A at '${seen:-<none>}', expected '$expected'"

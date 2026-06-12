@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/RED-Collective/red-engine/internal/navigation"
 )
@@ -135,4 +136,30 @@ func (h *handler) navFolderDescription(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "updated"})
+}
+
+// searchAPI serves GET /api/search?q=<query> — FTS5 full-text search over note
+// titles and previews. Returns up to 20 results, each with a highlighted snippet.
+//
+//	GET /api/search?q=neutrino → [{file_path,title,snippet}]
+func (h *handler) searchAPI(w http.ResponseWriter, r *http.Request) {
+	if h.navService == nil {
+		http.Error(w, "navigation service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		http.Error(w, "q parameter required", http.StatusBadRequest)
+		return
+	}
+	results, err := h.navService.SearchGuides(q)
+	if err != nil {
+		http.Error(w, "search failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if results == nil {
+		results = []navigation.SearchResult{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(results)
 }

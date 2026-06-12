@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RED-Collective/red-engine/internal/fetch"
 	"github.com/RED-Collective/red-engine/internal/node"
 	"github.com/RED-Collective/red-engine/internal/registry"
 )
@@ -35,7 +36,7 @@ func FetchNodeInfo(baseURL string) (*nodeInfoResponse, error) {
 	}
 	url := strings.TrimSuffix(baseURL, "/") + "/-/nodeinfo"
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := fetch.SafeClient()
 	resp, err := client.Get(url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to peer: %w", err)
@@ -104,13 +105,31 @@ func (h *handler) addPeer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Optional gossip: import the peer's known peers, always as upstream only
-	// (privacy opt-in — the operator must promote them manually).
-	if req.ImportPeers {
-		go importPeerGossip(req.URL)
+	// Reciprocal registration: when we add an upstream/mirror (a node we pull
+	// from), tell it we are now its downstream so it announces future URL changes
+	// back to us. Without this the upstream never knows to re-announce, and a
+	// dynamic-tunnel upstream becomes unreachable after it restarts. Best-effort.
+	if req.PeerType == "upstream" || req.PeerType == "mirror" {
+		if self := registry.GetSetting("public_url"); self != "" {
+			go func(upstream, selfURL string) {
+				if err := RegisterAsDownstream(upstream, selfURL); err != nil {
+					log.Printf("[Peer] reciprocal downstream registration with %s failed: %v", upstream, err)
+				}
+			}(req.URL, self)
+		}
 	}
 
+	// Optional gossip: run synchronously so the caller sees the imported peers
+	// immediately (async fire-and-forget caused a UX bug where peers appeared
+	// only after a second add because the goroutine outlived the request).
+	gossipCount := 0
+	if req.ImportPeers {
+		gossipCount = importPeerGossip(req.URL)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]int{"gossip_imported": gossipCount})
 }
 
 func (h *handler) deletePeer(w http.ResponseWriter, r *http.Request) {
@@ -140,7 +159,7 @@ func (h *handler) checkPeerHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid request", http.StatusBadRequest)
 		return
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := fetch.SafeClient()
 	resp, err := client.Get(strings.TrimSuffix(req.URL, "/") + "/-/nodeinfo")
 	if err != nil || resp.StatusCode != http.StatusOK {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -157,7 +176,7 @@ func (h *handler) checkPeerHealthHandler(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "missing url parameter", http.StatusBadRequest)
 		return
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := fetch.SafeClient()
 	resp, err := client.Get(strings.TrimSuffix(peerURL, "/") + "/-/nodeinfo")
 	status := "down"
 	if err == nil && resp.StatusCode == http.StatusOK {
@@ -289,30 +308,30 @@ func (h *handler) publicPeers(w http.ResponseWriter, r *http.Request) {
 
 // importPeerGossip fetches a peer's /-/peers list and registers any unknown
 // nodes as upstream ONLY (privacy opt-in — the operator must manually promote
-// them to downstream/mirror). Runs in a goroutine; errors are logged, not fatal.
-func importPeerGossip(peerURL string) {
+// them to downstream/mirror). Returns the number of newly imported peers.
+func importPeerGossip(peerURL string) int {
 	base := peerURL
 	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
 		base = "https://" + base
 	}
 	endpoint := strings.TrimSuffix(base, "/") + "/-/peers"
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := fetch.SafeClient()
 	resp, err := client.Get(endpoint)
 	if err != nil {
 		log.Printf("[Gossip] fetch %s: %v", endpoint, err)
-		return
+		return 0
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[Gossip] %s returned HTTP %d", endpoint, resp.StatusCode)
-		return
+		return 0
 	}
 
 	var remote []peerListItem
 	if err := json.NewDecoder(resp.Body).Decode(&remote); err != nil {
 		log.Printf("[Gossip] decode %s: %v", endpoint, err)
-		return
+		return 0
 	}
 
 	self := registry.GetSetting("public_url")
@@ -355,5 +374,26 @@ func importPeerGossip(peerURL string) {
 	}
 	if imported > 0 {
 		log.Printf("[Gossip] imported %d new upstream peer(s) from %s", imported, peerURL)
+	}
+	return imported
+}
+
+// RunGossipCycle re-gossips from all known upstream/mirror peers, registering any
+// newly discovered nodes. Called periodically from the federation heartbeat so
+// gossip is refreshed rather than running only once on peer-add.
+func RunGossipCycle() {
+	peers, err := registry.ListPeersByType("upstream", "mirror")
+	if err != nil {
+		log.Printf("[Gossip] heartbeat list failed: %v", err)
+		return
+	}
+	for _, p := range peers {
+		target := p.PublicURL
+		if target == "" {
+			target = p.URL
+		}
+		if target != "" {
+			go importPeerGossip(target)
+		}
 	}
 }

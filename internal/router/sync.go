@@ -3,7 +3,6 @@ package router
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -46,13 +45,16 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Reload after peer sync failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if h.navService != nil {
-			if _, err := h.navService.ScanDataDirectories(); err != nil {
-				log.Printf("[Sync] nav rescan after peer sync: %v", err)
-			}
-		}
+		// store.Reload fires the navigation reindex hook (folder tree/counts).
 		if req.SaveToStartup {
-			if err := registry.AddStartupSync(req.PeerURL+req.RemotePath, req.Filename); err != nil {
+			// Anchor the recurring sync to the peer's identity, not a frozen URL:
+			// the periodic peer-sync loop resolves the peer's current address from
+			// its key, so re-pull follows the peer across tunnel-URL changes.
+			peerKey := ""
+			if p, _ := registry.GetPeerByURL(strings.TrimSuffix(req.PeerURL, "/")); p != nil {
+				peerKey = p.PublicKey
+			}
+			if err := registry.AddPeerStartupSync(peerKey, req.PeerURL, req.RemotePath, req.Filename); err != nil {
 				http.Error(w, "Saved content but failed to update database: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -160,7 +162,12 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		httpReq.Header.Set("User-Agent", "RED-Engine-Sync/1.0")
-		client := &http.Client{Timeout: 15 * time.Second}
+		// Use the SSRF-hardened client so the actual connection re-resolves and
+		// re-checks the host inside DialContext. The manual LookupHost pre-check
+		// above is only a fast-fail; on its own it leaves a DNS-rebinding window
+		// (resolve-public-at-check-time, connect-private-at-dial-time). SafeClient
+		// closes that window. Loopback/RFC1918 stay gated by RED_ALLOW_PRIVATE_SYNC.
+		client := fetch.SafeClient()
 		resp, err := client.Do(httpReq)
 		if err != nil {
 			http.Error(w, "Failed to connect to remote server", http.StatusBadGateway)
@@ -188,11 +195,8 @@ func (h *handler) importRemote(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Content updated but failed to update memory index", http.StatusInternalServerError)
 		return
 	}
-	if h.navService != nil {
-		if _, err := h.navService.ScanDataDirectories(); err != nil {
-			log.Printf("[Sync] nav rescan after import: %v", err)
-		}
-	}
+	// store.Reload fires the navigation reindex hook, so the folder tree/counts are
+	// already rebuilt — no explicit ScanDataDirectories needed here.
 
 	if req.SaveToStartup {
 		if err := registry.AddStartupSync(req.URL, targetSubPath); err != nil {
@@ -232,6 +236,18 @@ func (h *handler) adminRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture this source's URL before we forget the entry, so we can also delete
+	// its out-of-data git cache when removing local files.
+	var srcURL string
+	if entries, err := registry.ListStartupSync(); err == nil {
+		for _, e := range entries {
+			if e.Filename == req.Filename {
+				srcURL = e.URL
+				break
+			}
+		}
+	}
+
 	if err := registry.RemoveStartupSync(req.Filename); err != nil {
 		http.Error(w, "Failed to remove from database", http.StatusInternalServerError)
 		return
@@ -241,8 +257,14 @@ func (h *handler) adminRemove(w http.ResponseWriter, r *http.Request) {
 		safeName := filepath.Clean(req.Filename)
 		if safeName != "." && safeName != "" && !strings.HasPrefix(safeName, "..") && !filepath.IsAbs(safeName) {
 			// Delete exactly the files this source wrote (recorded in its ledger),
-			// never the whole shared taxonomy bucket, and drop its hidden git cache.
+			// never the whole shared taxonomy bucket, and drop its git cache — both
+			// the relocated out-of-data cache (keyed by URL) and any legacy in-data one.
 			fetch.RemoveBySource(h.store.DataDir(), safeName)
+			if srcURL != "" {
+				if p := fetch.GitCachePath(srcURL); p != "" {
+					os.RemoveAll(p)
+				}
+			}
 			os.RemoveAll(filepath.Join(h.store.DataDir(), "."+safeName+".gitsrc"))
 		}
 	}

@@ -15,10 +15,9 @@ func (h *handler) source(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	// Use the stored Body from the Article struct
-	w.Write([]byte(art.Body))
+	w.Write([]byte(art.Raw))
 }
 
 func (h *handler) download(w http.ResponseWriter, r *http.Request) {

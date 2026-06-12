@@ -10,8 +10,10 @@ type Article struct {
 	Hash              string
 	Verified          bool
 	SignerKey         string // hex ed25519 pubkey of the signer (when present); no identity, no trust
+	SignerName        string // self-asserted display name from red_author_name frontmatter; NOT a trust signal
 	VerificationError string
 	VerificationState string   // "verified","unverified","tampered","unsigned"
+	SignedAt          string   // human-readable signature timestamp from red_signed_at frontmatter
 	Tags              []string // user-defined tags from the note's red_tags frontmatter
 }
 

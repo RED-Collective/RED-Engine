@@ -136,9 +136,12 @@ func (h *handler) apiIndex(w http.ResponseWriter, r *http.Request) {
 			{"GET", "/api", "This catalog."},
 			{"GET", "/api/navigation", "Top-level nav nodes (flat). ?path=<p> subtree; &flat=1 flat list; ?content_type=<v> filter."},
 			{"GET", "/api/tags", "All tags as [{name,count}]. ?tag=<t> lists the notes carrying that tag."},
+			{"GET", "/api/search?q=<query>", "FTS5 full-text search over note titles/previews; returns [{file_path,title,snippet}]."},
+			{"GET", "/api/backlinks?path=<p>", "Notes whose wikilinks point at the note at <p>; [{file_path,title,kind}]."},
+			{"GET", "/api/graph", "Full note link graph: {nodes:[{id,file_path,title,vault}], edges:[{source_id,target_id,kind}]}."},
 			{"GET", "/api/content", "Article or directory at ?path=<p>: rendered body_html, verification, crumbs, prev/next, tags."},
 			{"GET", "/api/recent-files", "Most recently modified articles. ?limit=N (default 5, max 20)."},
-			{"GET", "/-/search-index.json", "Flat search index: [{title,path,tags}]."},
+			{"GET (admin)", "/-/search-index.json", "Flat search index [{title,path,tags}] — requires X-Admin-Token."},
 			{"GET", "/-/nodeinfo", "This node's identity, name, description, public key, exported paths."},
 			{"GET", "/-/peers", "Known federation peers."},
 			{"GET", "/-/health", "Liveness probe (plain OK)."},
@@ -161,6 +164,9 @@ func (h *handler) apiIndex(w http.ResponseWriter, r *http.Request) {
 			{"POST", "/-/reload", "Rebuild the content store from disk."},
 			{"POST", "/-/admin/navigation/rescan", "Rebuild the navigation index."},
 			{"PUT", "/-/admin/navigation/folder/description", "Override a folder description. ?folder_id=<id>."},
+			{"POST", "/-/admin/backup", "Create a zip snapshot of data/; returns {name,path,size_bytes,created}."},
+			{"GET", "/-/admin/backups", "List existing data backups, newest first."},
+			{"GET", "/-/admin/links/broken", "Wikilink targets that resolve to no local note: [{target_path,count,sources}]."},
 		},
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

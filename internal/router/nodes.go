@@ -1,14 +1,101 @@
 package router
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/RED-Collective/red-engine/internal/node"
 	"github.com/RED-Collective/red-engine/internal/registry"
 )
+
+// nodeAPIItem is a single entry in the /api/nodes response — used for both
+// this node (self) and known peers. IsSelf distinguishes the two.
+type nodeAPIItem struct {
+	URL           string   `json:"url"`
+	Name          string   `json:"name"`
+	PublicKey     string   `json:"public_key,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	TunnelType    string   `json:"tunnel_type,omitempty"`
+	IsOnline      bool     `json:"is_online"`
+	IsSelf        bool     `json:"is_self"`
+	ExportedPaths []string `json:"exported_paths"`
+	LastSeen      string   `json:"last_seen,omitempty"`
+}
+
+// nodesAPIResponse is the envelope returned by GET /api/nodes.
+type nodesAPIResponse struct {
+	Self  nodeAPIItem   `json:"self"`
+	Nodes []nodeAPIItem `json:"nodes"`
+}
+
+// nodesAPI serves GET /api/nodes — a public JSON directory of this node and
+// all known peers. Designed for a frontend node-browser UI; does not include
+// internal admin-only peer fields. Peers with no contactable URL are omitted.
+func (h *handler) nodesAPI(w http.ResponseWriter, r *http.Request) {
+	selfKey := node.GetNodePublicKey()
+	selfURL := ensureScheme(registry.GetSetting("public_url"))
+
+	self := nodeAPIItem{
+		URL:         selfURL,
+		Name:        h.nodeName(),
+		PublicKey:   selfKey,
+		Description: registry.GetSetting("node_description"),
+		TunnelType:  registry.GetSetting("tunnel_type"),
+		IsOnline:    true,
+		IsSelf:      true,
+	}
+
+	// Exported paths: top-level directories in data/.
+	if entries, err := readDataDirEntries(h.store.DataDir()); err == nil {
+		self.ExportedPaths = entries
+	}
+	if self.ExportedPaths == nil {
+		self.ExportedPaths = []string{}
+	}
+
+	peers, err := registry.ListPeers()
+	if err != nil {
+		http.Error(w, "failed to list peers", http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]nodeAPIItem, 0, len(peers))
+	for _, p := range peers {
+		contact := p.PublicURL
+		if contact == "" {
+			contact = p.URL
+		}
+		if contact == "" {
+			continue
+		}
+		paths := p.ExportedPaths
+		if paths == nil {
+			paths = []string{}
+		}
+		item := nodeAPIItem{
+			URL:           ensureScheme(contact),
+			Name:          p.Name,
+			PublicKey:     p.PublicKey,
+			Description:   p.Description,
+			TunnelType:    p.TunnelType,
+			IsOnline:      p.IsOnline,
+			IsSelf:        false,
+			ExportedPaths: paths,
+		}
+		if !p.LastSeen.IsZero() {
+			item.LastSeen = p.LastSeen.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+
+	resp := nodesAPIResponse{Self: self, Nodes: items}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
+}
 
 // nodesPageData is the view model for the public /-/nodes directory page.
 type nodesPageData struct {
@@ -145,4 +232,20 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 	if err := h.nodesTmpl.ExecuteTemplate(w, "nodes.html", data); err != nil {
 		http.Error(w, "Nodes template execution error: "+err.Error(), http.StatusInternalServerError)
 	}
+}
+
+// readDataDirEntries returns the top-level directory names inside dataDir as
+// slash-prefixed exported-path strings (e.g. ["/Vault", "/Archive"]).
+func readDataDirEntries(dataDir string) ([]string, error) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			paths = append(paths, "/"+e.Name())
+		}
+	}
+	return paths, nil
 }

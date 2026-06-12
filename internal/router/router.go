@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RED-Collective/red-engine/internal/config"
 	"github.com/RED-Collective/red-engine/internal/models"
@@ -107,18 +108,50 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 		devMode:     devMode,
 	}
 
-	// Initialise navigation service if registry DB is available.
-	if db := registry.GetDB(); db != nil {
-		if err := navigation.InitNavSchema(db); err != nil {
-			log.Printf("[Navigation] Schema init failed: %v", err)
-		} else {
-			h.navService = navigation.NewService(db, s.DataDir())
+	// Navigation service gets its own dedicated SQLite DB (nav.db) with WAL mode
+	// and an unlimited connection pool. The alternative — sharing the registry's
+	// single-connection pool — causes ScanDataDirectories (which holds a write
+	// transaction for a full filesystem walk) to starve every concurrent
+	// /api/navigation and /api/tags read, making the UI appear permanently stuck
+	// at "Loading..." after the first content sync.
+	stateDir := cfg.ResolvedStateDir()
+	if navDB, err := navigation.OpenNavDB(filepath.Join(stateDir, "nav.db")); err != nil {
+		log.Printf("[Navigation] Failed to open nav DB: %v", err)
+	} else if err := navigation.InitNavSchema(navDB); err != nil {
+		log.Printf("[Navigation] Schema init failed: %v", err)
+	} else {
+		h.navService = navigation.NewService(navDB, s.DataDir())
+		go func() {
+			if _, err := h.navService.ScanDataDirectories(); err != nil {
+				log.Printf("[Navigation] Initial scan failed: %v", err)
+			}
+		}()
+		// The reindex hook fires after every content change (Reload, UpdateFiles).
+		// Running it async prevents a long filesystem scan from blocking Reload's
+		// caller. The single-flight guard (scanning atomic) drops a new trigger when
+		// a scan is already in progress — the running scan will capture the latest
+		// state because it reads the filesystem directly.
+		navSvc := h.navService
+		var scanning atomic.Bool
+		s.SetReindexHook(func() {
+			if !scanning.CompareAndSwap(false, true) {
+				return
+			}
 			go func() {
-				if _, err := h.navService.ScanDataDirectories(); err != nil {
-					log.Printf("[Navigation] Initial scan failed: %v", err)
+				defer scanning.Store(false)
+				if _, err := navSvc.ScanDataDirectories(); err != nil {
+					log.Printf("[Navigation] Reindex after content change failed: %v", err)
 				}
 			}()
-		}
+		})
+	}
+
+	// Peer sync loop requires the registry DB.
+	if registry.GetDB() != nil {
+		// Periodically re-pull subscribed peer content from each source's live
+		// address (resolved by identity), so federated content keeps syncing after
+		// a peer changes its tunnel URL.
+		h.startPeerSyncLoop()
 	}
 
 	// Resolve the active compiled-frontend source, in priority order:
@@ -156,7 +189,7 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	mux.HandleFunc("/", h.frontend)
 	mux.HandleFunc("/-/health", h.health)
 	mux.HandleFunc("/-/manifest", h.manifest)
-	mux.HandleFunc("/-/search-index.json", h.searchIndex)
+	mux.HandleFunc("/-/search-index.json", h.adminOnly(h.searchIndex))
 	mux.HandleFunc("/-/source/", h.source)
 	mux.HandleFunc("/-/download/", h.download)
 	mux.HandleFunc("/-/webhook/sync", h.webhookSync)
@@ -168,7 +201,9 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	mux.HandleFunc("/-/peers", h.publicPeers)
 	mux.HandleFunc("/-/announce/challenge", h.announceChallenge)
 	mux.HandleFunc("/-/announce/confirm", h.announceConfirm)
+	mux.HandleFunc("/-/announce/downstream", h.announceDownstream)
 	mux.HandleFunc("/-/sync/verify", h.syncVerify)
+	mux.HandleFunc("/-/peer/resolve", h.peerResolve)
 	mux.HandleFunc("/-/branch-meta/", h.branchMeta)
 	mux.HandleFunc("/-/assets/", h.assetFile)
 	contentFS := http.StripPrefix("/content/", http.FileServer(http.Dir(h.store.DataDir())))
@@ -190,12 +225,23 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	// Contributor keyring: the recognized signer keys that make a valid signature
 	// read as "verified" rather than "unverified".
 	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
+	mux.HandleFunc("/-/admin/contributors/detected", h.adminOnly(h.detectedSigners))
 	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributorToDB))
 	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.revokeContributor))
+	// Data backups: zip snapshots of data/ so a bad sync can be rolled back by
+	// unzipping over the data directory. Creation is admin-only; the engine also
+	// takes one automatically on startup before any sync runs.
+	mux.HandleFunc("/-/admin/backup", h.adminOnly(h.backupCreate))
+	mux.HandleFunc("/-/admin/backups", h.adminOnly(h.backupList))
 	// JSON API consumed by the frontend. GET /api is a self-describing catalog.
 	mux.HandleFunc("/api", h.apiIndex)
 	mux.HandleFunc("/api/navigation", h.navAPI)
 	mux.HandleFunc("/api/tags", h.tagsAPI)
+	mux.HandleFunc("/api/search", h.searchAPI)
+	mux.HandleFunc("/api/backlinks", h.backlinksAPI)
+	mux.HandleFunc("/api/graph", h.graphAPI)
+	mux.HandleFunc("/api/nodes", h.nodesAPI)
+	mux.HandleFunc("/-/admin/links/broken", h.adminOnly(h.brokenLinksAPI))
 	mux.HandleFunc("/-/admin/navigation/rescan", h.adminOnly(h.navRescan))
 	mux.HandleFunc("/-/admin/navigation/folder/description", h.adminOnly(h.navFolderDescription))
 
