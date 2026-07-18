@@ -3,6 +3,10 @@
 
 ## Sovereign Knowledge Node Engine
 
+> **📖 [Installation Guide →](./INSTALL.md)**
+> Quick start: `git clone` → `cd RED-Engine` → `./setup.sh install` → `./red`
+> Open `http://localhost:8080`
+
 Project R.E.D Network rejects both centralized database monopolies and overly complex distributed consensus protocols. Instead, it systematically decouples the **Independent Data Layer** from the **Social Curation Layer**.
 
 The engine operates as a stateless, high‑performance Go runtime that compiles raw Markdown files into visually polarized technical templates, dynamically injecting cryptographic integrity signatures on every request loop.
@@ -112,47 +116,46 @@ All components run as standard Podman (or Docker) containers, orchestrated via `
 
 ## 6. Installation & Deployment
 
+**Full installation instructions → [`INSTALL.md`](./INSTALL.md)**
+
+Quick reference:
+
 ### Prerequisites
-- **Podman** (recommended) or **Docker** (with `docker compose` V2)
-- **Go 1.21+** (only needed for local development and tests)
+- **Go 1.21+** — [go.dev](https://go.dev/dl/)
+- **Node.js 20+** — [nodejs.org](https://nodejs.org/)
 - **Git**
-- **Bash**
+- **Docker** or **Podman** (optional, for containerized deployment)
 
-### First‑Time Setup
-
-Clone the repository and run the setup wizard:
+### Quick Start
 
 ```bash
 git clone https://github.com/RED-Collective/RED-Engine.git
-cd red-engine
-./setup.sh
+cd RED-Engine
+./setup.sh install
+./red
 ```
 
-The wizard will:
-1. Ask for your listen address and data directory.
-2. Ask for a site name (freely changeable at any time).
-3. Warn you about node name permanence and require acknowledgement before proceeding.
-4. Generate a cryptographically random 32‑character admin token.
-5. Write credentials to `.env` (the resilient primary store) and `config.json`.
-6. Build the container image and start the node.
-
-After setup the node is reachable at:
-- **Direct:** `http://localhost:8080`
-- **Via Caddy (production):** `http://localhost` (port 80 / 443)
-- **Admin panel:** `http://localhost:8080/-/admin`
+Open `http://localhost:8080` — admin panel at `/-/admin`.
 
 ### Common Commands
 
 | Command | What it does |
 |---|---|
-| `./setup.sh` | First‑time wizard (or show status if already configured) |
+| `./setup.sh install` | Install dependencies + build binary + frontend |
+| `./setup.sh dev` | Start dev server with live reload (Vite + air) |
 | `./setup.sh test` | Run the full Go test suite |
-| `./setup.sh dev` | Start dev server with live reload |
-| `./setup.sh install` | Build container image and start production node |
-| `./setup.sh update` | Pull latest code, run tests, rebuild, restart |
-| `./setup.sh token` | Rotate the admin token |
-| `./setup.sh backup` | Tar the `./data` directory into `./backups/` |
-| `./setup.sh status` | Show container status and health check |
+| `./setup.sh build` | Build Go binary + frontend |
+| `./setup.sh token` | Show the admin token |
+| `./setup.sh status` | Show container status |
+| `make build-frontend` | Build only the React SPA |
+| `make build-backend` | Build only the Go binary |
+
+See [`INSTALL.md`](./INSTALL.md) for:
+- Windows installation
+- Docker / Podman deployment
+- Step-by-step manual setup
+- Federation testing
+- Troubleshooting
 
 ### Credential Resilience
 

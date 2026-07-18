@@ -29,12 +29,13 @@ Thumbs.db
 *.log
 *.bak
 *.tmp
-*.md
 *.txt
 
 !*.sh
 !README.md
+!INSTALL.md
 !BETA_TESTING.md
+!BULLETPROOFING_ROADMAP.md
 !LICENSE
 .claude
 
@@ -65,3 +66,5 @@ venv-podman
 # Red Project Related
 
 config.json
+*.exe
+pnpm-lock.yaml

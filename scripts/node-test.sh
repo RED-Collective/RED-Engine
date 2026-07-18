@@ -128,10 +128,41 @@ pid_alive() { local f="$1"; [ -f "$f" ] && kill -0 "$(cat "$f")" 2>/dev/null; }
 
 # ── Commands ────────────────────────────────────────────────────────────────
 
+ensure_configs() {
+  # Create config1.json for node B if missing
+  if [ ! -f "$ROOT/config1.json" ]; then
+    cat > "$ROOT/config1.json" << 'EOF'
+{
+  "addr": ":8081",
+  "dataDir": "data1",
+  "adminToken": "dev-token-B",
+  "webhookSecret": "",
+  "WebDir": "FRONTEND_BUILD"
+}
+EOF
+    ok "Created config1.json (node B)"
+  fi
+  # Ensure config.json exists (it should, but just in case)
+  if [ ! -f "$ROOT/config.json" ]; then
+    cat > "$ROOT/config.json" << 'EOF'
+{
+  "addr": ":8080",
+  "dataDir": "data",
+  "adminToken": "8zhOyGP5477eYhrmIFx1WnjXGzRjbMg8",
+  "webhookSecret": "",
+  "WebDir": "FRONTEND_BUILD"
+}
+EOF
+    ok "Created config.json (node A)"
+  fi
+}
+
 cmd_build() {
   require go; require npm
+  ensure_configs
   log "Building SPA (npm run build)…"
-  npm run build >/dev/null 2>&1 || die "npm run build failed (run it directly to see errors)"
+  (cd "$ROOT/internal/router/red-engine-frontend" && npm install --silent && npm run build) >/dev/null 2>&1 || \
+    die "npm run build failed (run it directly from internal/router/red-engine-frontend to see errors)"
   log "Building red binary (go build -o red ./cmd/red)…"
   go build -o "$RED_BIN" ./cmd/red || die "go build failed"
   ok "Built: $RED_BIN"

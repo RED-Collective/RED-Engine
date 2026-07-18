@@ -1,73 +1,71 @@
-# React + TypeScript + Vite
+# RED Engine — Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This is the React SPA for the RED Engine. It communicates with the Go backend via REST API.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- **React 19** + **TypeScript 6**
+- **Vite 8** (bundler / dev server)
+- **Tailwind CSS v4** (styling)
+- **React Router v7** (routing)
 
-## React Compiler
+## Directory Structure
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+src/
+├── main.tsx              — Entry point, route definitions
+├── App.tsx               — Layout (header, nav bar, sidebar)
+├── index.css             — Tailwind theme + dark mode
+├── i18n.ts               — Translation strings (7 languages)
+├── not_found.tsx         — 404 page
+├── contexts/
+│   └── SettingsContext.tsx — Theme + language state management
+├── components/
+│   └── SettingsPanel.tsx  — Settings dropdown (theme toggle, language select)
+├── pages/
+│   ├── main.tsx           — Home / hero page
+│   ├── article.tsx        — Article listing + directory browser
+│   ├── article-detail.tsx — Single article viewer
+│   └── about.tsx          — About page
+└── assets/
+    └── logo.png
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## Development
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+```bash
+# From repo root — starts both backend + frontend
+cd ../..
+./red-dev.sh
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Or from this directory (frontend only — backend must be running separately)
+npm install
+npm run dev
 ```
+
+The Vite dev server runs on `http://localhost:5173` and proxies `/api/*` requests to the Go backend at `http://localhost:8080`.
+
+## Production Build
+
+```bash
+npm run build
+# Output goes to ../../../FRONTEND_BUILD/ (repo root)
+```
+
+## Routes
+
+| Path | Page |
+|---|---|
+| `/` | Home |
+| `/articles` | Article listing / directory browser |
+| `/article?path=...` | Single article view |
+| `/about` | About the RED Engine |
+
+## Features
+
+- Directory browsing — navigate vault folders and files
+- Dark mode toggle — persists to localStorage
+- 7-language i18n — English, Spanish, French, German, Japanese, Chinese, Hindi
+- Article verification badges (verified / unsigned)
+- Breadcrumb navigation
+- Prev/next article navigation

@@ -13,6 +13,9 @@ cd "$(dirname "$0")/.."
 TOKEN_A="${RED_ADMIN_TOKEN_A:-dev-token-A}"
 TOKEN_B="${RED_ADMIN_TOKEN_B:-dev-token-B}"
 
+echo "==> Building frontend"
+(cd internal/router/red-engine-frontend && npm install --silent && npm run build) || echo "Warning: frontend build failed, continuing..."
+
 echo "==> Building red-engine binary"
 go build -o ./red ./cmd/red
 
