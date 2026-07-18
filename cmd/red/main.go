@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -216,8 +217,17 @@ func main() {
 	go federationHeartbeat()
 
 	// Attribution required by NOTICE (AGPL-3.0 §7(b)) — do not remove.
+	localURL := cfg.Addr
+	if strings.HasPrefix(localURL, ":") {
+		localURL = "http://localhost" + localURL
+	} else {
+		localURL = "http://" + localURL
+	}
+	fmt.Printf("\033[1;36mRED Engine → %s\033[0m\n", localURL)
+	if cfg.PublicURL != "" {
+		fmt.Printf("\033[2;90mPublic → %s\033[0m\n", cfg.PublicURL)
+	}
 	log.Printf("Powered by RED Collective — https://github.com/RED-Collective")
-	log.Printf("RED Engine listening on %s", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, router.New(s, &cfg)); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
