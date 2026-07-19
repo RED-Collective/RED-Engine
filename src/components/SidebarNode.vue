@@ -22,7 +22,7 @@ const indent = computed(() => ({ paddingLeft: `${props.depth * 0.75}rem` }))
 
 <template>
   <!-- Folder node -->
-  <details v-if="!node.is_leaf" :open="isAncestor" class="select-none">
+  <details v-if="!node.is_guide" :open="isAncestor" class="select-none">
     <summary
       class="flex cursor-pointer items-center gap-1 rounded px-2 py-1 text-sm text-ink-mid transition-colors hover:bg-paper-2 hover:text-imperial"
       :style="indent"
@@ -41,7 +41,7 @@ const indent = computed(() => ({ paddingLeft: `${props.depth * 0.75}rem` }))
     </div>
   </details>
 
-  <!-- Article node -->
+  <!-- Article / guide node -->
   <RouterLink
     v-else
     :to="to"

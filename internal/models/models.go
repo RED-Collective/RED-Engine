@@ -9,9 +9,12 @@ type Article struct {
 	Raw               string
 	Hash              string
 	Verified          bool
-	Author            string
+	SignerKey         string // hex ed25519 pubkey of the signer (when present); no identity, no trust
+	SignerName        string // self-asserted display name from red_author_name frontmatter; NOT a trust signal
 	VerificationError string
-	VerificationState string // "verified","tampered","invalid_sig","untrusted","malformed","unsigned"
+	VerificationState string   // "verified","unverified","tampered","unsigned"
+	SignedAt          string   // human-readable signature timestamp from red_signed_at frontmatter
+	Tags              []string // user-defined tags from the note's red_tags frontmatter
 }
 
 type Section struct {
@@ -54,7 +57,7 @@ type PageData struct {
 	TopCat            string
 	Crumb             []Crumb
 	Verified          bool
-	Author            string
+	SignerKey         string
 	Hash              string
 	VerificationError string
 	VerificationState string

@@ -1,14 +1,12 @@
 package store
 
 import (
-	"crypto/ed25519"
 	"crypto/sha256"
-	"database/sql"
-	_ "database/sql"
 	"encoding/hex"
 	"html/template"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,10 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/RED-Collective/red-engine/internal/fetch"
 	"github.com/RED-Collective/red-engine/internal/models"
-	"github.com/RED-Collective/red-engine/internal/render"
-
 	"github.com/RED-Collective/red-engine/internal/registry"
+	"github.com/RED-Collective/red-engine/internal/render"
 
 	"github.com/radovskyb/watcher"
 )
@@ -31,11 +29,28 @@ type Store struct {
 	mu               sync.RWMutex
 	remoteSyncActive atomic.Bool
 	remoteSyncEnd    atomic.Int64
+	// afterReindex, when set, is run (outside the store lock) after every
+	// successful Reload or UpdateFiles. The router registers the navigation
+	// service's rescan here so the SQLite-backed folder tree / guide counts stay
+	// in lockstep with the in-memory nav — see SetReindexHook.
+	afterReindex atomic.Pointer[func()]
+
+	// noteIndex/assetIndex resolve Obsidian [[wikilinks]] and ![[embeds]] by
+	// basename (how Obsidian itself resolves, since there is no .obsidian metadata
+	// to consult after a vault is pushed to git). noteIndex maps a lowercased note
+	// basename WITHOUT ".md" → its article clean-path; assetIndex maps a lowercased
+	// image basename WITH extension → its data-relative slash path. Both are rebuilt
+	// by reloadLocked and incrementally maintained by updateFilesLocked, and are only
+	// read/written while holding s.mu (during processArticle). See buildLinkIndex and
+	// linkResolver.
+	noteIndex  map[string]string
+	assetIndex map[string]string
 }
 
 type SearchItem struct {
-	Title string `json:"title"`
-	Path  string `json:"path"`
+	Title string   `json:"title"`
+	Path  string   `json:"path"`
+	Tags  []string `json:"tags,omitempty"`
 }
 
 func New(dataDir string) *Store {
@@ -117,19 +132,69 @@ func (s *Store) ShouldIgnoreLocalEvents() bool {
 // STATE MANAGEMENT (Reload & Granular Update)
 // =====================================================================
 
+// SetReindexHook registers a callback invoked after every successful Reload or
+// UpdateFiles, OUTSIDE the store lock. The navigation service registers its
+// ScanDataDirectories here so the SQLite-backed folder tree and guide counts
+// (served at /api/navigation) are rebuilt whenever content changes. Without it a
+// synced or edited note updates the in-memory nav — which drives article pages,
+// "recently added", and search — but leaves the folder cards/counts stale until a
+// restart or manual rescan. Safe to call concurrently with reloads; pass nil to
+// clear.
+func (s *Store) SetReindexHook(fn func()) {
+	if fn == nil {
+		s.afterReindex.Store(nil)
+		return
+	}
+	s.afterReindex.Store(&fn)
+}
+
+// runReindexHook invokes the registered post-reindex callback, if any. Callers
+// MUST invoke it after releasing s.mu so the hook (a full filesystem rescan + DB
+// transaction) never runs while holding the store lock.
+func (s *Store) runReindexHook() {
+	if p := s.afterReindex.Load(); p != nil && *p != nil {
+		(*p)()
+	}
+}
+
+// Reload rebuilds the in-memory nav from a full filesystem walk, then fires the
+// reindex hook so any secondary index is rebuilt to match.
 func (s *Store) Reload() error {
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	s.runReindexHook()
+	return nil
+}
+
+func (s *Store) reloadLocked() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	trustedKeys, allSignatures := s.loadSecurityData()
+	recognized := registry.RecognizedContributorKeys()
 	newNav := make(map[string]*models.Section)
 
+	// Build the wikilink/embed resolution index from a cheap path-only pass BEFORE
+	// rendering, so every article resolves links against the full vault.
+	s.noteIndex, s.assetIndex = s.buildLinkIndex()
+
 	err := filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			// Skip metadata/source dirs (.git, .red-feather, .meta, the hidden
+			// .<vault>.gitsrc cache) so the pristine clone is never indexed.
+			if path != s.dataDir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if filepath.Ext(path) != ".md" {
 			return nil
 		}
 
-		art, parts, err := s.processArticle(path, trustedKeys, allSignatures)
+		art, parts, err := s.processArticle(path, recognized)
 		if err == nil && art != nil {
 			s.insertIntoMap(newNav, parts, art)
 		} else if err != nil {
@@ -170,12 +235,26 @@ func (s *Store) checkMetaFiles(nav map[string]*models.Section) {
 	}
 }
 
+// UpdateFiles hot-patches the in-memory nav for the given paths, then fires the
+// reindex hook so any secondary index reflects the change too.
 func (s *Store) UpdateFiles(changedPaths []string) error {
+	s.updateFilesLocked(changedPaths)
+	s.runReindexHook()
+	return nil
+}
+
+func (s *Store) updateFilesLocked(changedPaths []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, p := range changedPaths {
 		p = filepath.Clean(p)
+
+		// Keep the link/embed index current for notes AND image assets, so a synced or
+		// dropped image is resolvable by the next note render even though only notes
+		// become nav articles below.
+		s.updateLinkIndexEntry(p)
+
 		if filepath.Ext(p) != ".md" {
 			continue
 		}
@@ -193,86 +272,197 @@ func (s *Store) UpdateFiles(changedPaths []string) error {
 
 		s.removeFromMap(s.nav, parts)
 
-		trustedKeys, allSignatures := s.loadSecurityData()
+		recognized := registry.RecognizedContributorKeys()
 
-		art, _, err := s.processArticle(p, trustedKeys, allSignatures)
+		art, _, err := s.processArticle(p, recognized)
 		if err == nil && art != nil {
 			s.insertIntoMap(s.nav, parts, art)
 		} else if err != nil {
 			log.Printf("⚠️ Failed to hot-patch article %s: %v", p, err)
 		}
 	}
-	return nil
+}
+
+// RevalidateTrust re-evaluates the trust of every already-loaded article against a
+// fresh contributor keyring WITHOUT re-reading or re-rendering any file. It only
+// touches articles that carry a cryptographically valid signature (state
+// "verified"/"unverified"), flipping them between those two as the keyring changes,
+// and leaves "tampered"/"unsigned" articles untouched. Call it after the keyring is
+// modified (a contributor added or revoked) so notes re-verify without a restart.
+func (s *Store) RevalidateTrust() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	recognized := registry.RecognizedContributorKeys()
+
+	var walk func(sec *models.Section)
+	walk = func(sec *models.Section) {
+		if sec == nil {
+			return
+		}
+		for _, art := range sec.Articles {
+			switch art.VerificationState {
+			case "verified", "unverified":
+				if recognized[strings.ToLower(art.SignerKey)] {
+					art.Verified = true
+					art.VerificationState = "verified"
+					art.VerificationError = ""
+				} else {
+					art.Verified = false
+					art.VerificationState = "unverified"
+					art.VerificationError = "Signed by an unrecognized contributor key"
+				}
+			}
+		}
+		for _, sub := range sec.Sub {
+			walk(sub)
+		}
+	}
+
+	for _, sec := range s.nav {
+		walk(sec)
+	}
 }
 
 // =====================================================================
 // DATA PROCESSING HELPERS
 // =====================================================================
 
-func (s *Store) loadSecurityData() (map[string]string, map[string]models.ManifestEntry) {
-	trustedKeys := make(map[string]string)
-	regDB := registry.GetDB()
-	if regDB != nil {
-		rows, err := regDB.Query(`SELECT public_key, name FROM trusted_authors WHERE revoked = 0`)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var pub, name string
-				if err := rows.Scan(&pub, &name); err == nil {
-					trustedKeys[strings.ToLower(pub)] = name
-				}
-			}
-		}
-	}
+// buildLinkIndex walks the data dir (paths only — no reads) and returns the
+// basename→path maps used to resolve [[wikilinks]] and ![[embeds]]. Notes are keyed
+// by basename without ".md"; image assets by basename with extension. On a duplicate
+// basename the first occurrence wins (and a warning is logged), since without
+// per-note metadata the engine cannot replicate Obsidian's shortest-path tie-break.
+// Callers hold s.mu.
+func (s *Store) buildLinkIndex() (notes, assets map[string]string) {
+	notes = make(map[string]string)
+	assets = make(map[string]string)
 
-	allSignatures := make(map[string]models.ManifestEntry)
 	filepath.WalkDir(s.dataDir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Base(path) != "signer.db" {
-			return nil
-		}
-		if filepath.Base(filepath.Dir(path)) != ".red-signer" {
-			return nil
-		}
-		signerDB, err := sql.Open("sqlite", path)
 		if err != nil {
-			log.Printf("Warning: cannot open signer.db at %s: %v", path, err)
 			return nil
 		}
-		defer signerDB.Close()
-
-		vaultRoot := filepath.Dir(filepath.Dir(path))
-		relDir, _ := filepath.Rel(s.dataDir, vaultRoot)
-		relDir = filepath.ToSlash(relDir)
-
-		rows, err := signerDB.Query(`SELECT path, file_hash, public_key, signature FROM files`)
+		if d.IsDir() {
+			if path != s.dataDir && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(s.dataDir, path)
 		if err != nil {
-			log.Printf("Warning: cannot read signer.db at %s: %v", path, err)
 			return nil
 		}
-		defer rows.Close()
+		relSlash := filepath.ToSlash(rel)
+		name := d.Name()
 
-		for rows.Next() {
-			var filePath, fileHash, pubKey, sig string
-			if err := rows.Scan(&filePath, &fileHash, &pubKey, &sig); err != nil {
-				continue
+		if strings.EqualFold(filepath.Ext(name), ".md") {
+			base := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+			clean := strings.TrimSuffix(relSlash, ".md")
+			if existing, ok := notes[base]; ok {
+				log.Printf("⚠️ wikilink index: duplicate note basename %q (%s vs %s); keeping first", base, existing, clean)
+			} else {
+				notes[base] = clean
 			}
-			fullKey := filepath.ToSlash(filePath)
-			if relDir != "." && !strings.HasPrefix(fullKey, relDir+"/") {
-				fullKey = filepath.ToSlash(filepath.Join(relDir, filePath))
-			}
-			allSignatures[fullKey] = models.ManifestEntry{
-				FileHash:  fileHash,
-				Hash:      fileHash,
-				PublicKey: pubKey,
-				Signature: sig,
+		} else if fetch.IsSyncableAsset(name) {
+			base := strings.ToLower(name)
+			if existing, ok := assets[base]; ok {
+				log.Printf("⚠️ embed index: duplicate asset basename %q (%s vs %s); keeping first", base, existing, relSlash)
+			} else {
+				assets[base] = relSlash
 			}
 		}
 		return nil
 	})
-	return trustedKeys, allSignatures
+	return notes, assets
 }
 
-func (s *Store) processArticle(p string, trustedKeys map[string]string, allSignatures map[string]models.ManifestEntry) (*models.Article, []string, error) {
+// updateLinkIndexEntry keeps the wikilink/embed index current for a single changed
+// path (note or image), adding it when present and removing it when deleted, so
+// embeds/links resolve on the next render without a full reload. Callers hold s.mu.
+func (s *Store) updateLinkIndexEntry(p string) {
+	absP, _ := filepath.Abs(p)
+	absData, _ := filepath.Abs(s.dataDir)
+	rel, err := filepath.Rel(absData, absP)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return
+	}
+	relSlash := filepath.ToSlash(rel)
+	name := filepath.Base(p)
+	_, statErr := os.Stat(p)
+	exists := statErr == nil
+
+	if s.noteIndex == nil {
+		s.noteIndex = make(map[string]string)
+	}
+	if s.assetIndex == nil {
+		s.assetIndex = make(map[string]string)
+	}
+
+	if strings.EqualFold(filepath.Ext(name), ".md") {
+		base := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+		clean := strings.TrimSuffix(relSlash, ".md")
+		if exists {
+			s.noteIndex[base] = clean
+		} else if s.noteIndex[base] == clean {
+			delete(s.noteIndex, base) // only drop the mapping this exact file owned
+		}
+	} else if fetch.IsSyncableAsset(name) {
+		base := strings.ToLower(name)
+		if exists {
+			s.assetIndex[base] = relSlash
+		} else if s.assetIndex[base] == relSlash {
+			delete(s.assetIndex, base)
+		}
+	}
+}
+
+// linkResolver returns a render.LinkResolver closed over the current index. It looks
+// targets up by basename (mirroring Obsidian), serving images from the public
+// /content/ route and notes from their article path.
+func (s *Store) linkResolver() render.LinkResolver {
+	return func(target string, embed bool) (string, bool) {
+		base := strings.ToLower(filepath.Base(strings.TrimSpace(target)))
+		if base == "" {
+			return "", false
+		}
+		if embed {
+			if rel, ok := s.assetIndex[base]; ok {
+				return contentURL(rel), true
+			}
+			return "", false
+		}
+		base = strings.TrimSuffix(base, ".md") // tolerate an explicit .md in a link
+		if clean, ok := s.noteIndex[base]; ok {
+			return articleURL(clean), true
+		}
+		return "", false
+	}
+}
+
+// contentURL builds the public URL for a synced asset at the given data-relative
+// slash path, percent-escaping spaces and other path characters.
+// toTitle capitalises the first letter of s. Replaces the deprecated
+// strings.Title which mishandles Unicode (not a concern for our ASCII filenames,
+// but the deprecation lint warning is noisy and misleading).
+func toTitle(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func contentURL(rel string) string {
+	u := url.URL{Path: "/content/" + rel}
+	return u.String()
+}
+
+// articleURL builds the in-app URL for a note at the given clean (no ".md") path.
+func articleURL(clean string) string {
+	u := url.URL{Path: "/" + clean}
+	return u.String()
+}
+
+func (s *Store) processArticle(p string, recognized map[string]bool) (*models.Article, []string, error) {
 	content, err := os.ReadFile(p)
 	if err != nil {
 		return nil, nil, err
@@ -290,54 +480,44 @@ func (s *Store) processArticle(p string, trustedKeys map[string]string, allSigna
 	cleanPath := strings.TrimSuffix(relativePath, ".md")
 	parts := strings.Split(filepath.ToSlash(cleanPath), "/")
 
+	// Hash the FULL file (header + body) for the content hash, but render only the
+	// body — goldmark has no frontmatter extension, so passing the raw `---` block
+	// would leak `<hr>` + `key: value` lines onto the page. The readable signature
+	// date is re-surfaced as proper UI via Article.SignedAt below.
 	hashBytes := sha256.Sum256(content)
 	fileHash := hex.EncodeToString(hashBytes[:])
-	res, err := render.Markdown(string(content), cleanPath)
+	// Resolve Obsidian [[wikilinks]]/![[embeds]] into standard Markdown before render —
+	// goldmark treats them as literal text otherwise. The hash above is over the raw
+	// file, so this rewrite never affects signature verification.
+	body := render.ResolveObsidianLinks(string(fetch.FrontmatterBody(content)), s.linkResolver())
+	res, err := render.Markdown(body, cleanPath)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// Verify straight from the note's frontmatter — the signature, signer key, name
+	// and body hash all travel in the header, so there is no signer.db to consult.
+	v := fetch.VerifyNote(content)
 	isVerified := false
-	authorName := "Unverified / Unknown Origin"
-	verifyErr := "File signature not found in manifest"
-	verificationState := "unsigned"
-
-	if entry, exists := allSignatures[relativePath]; exists {
-		entryHash := entry.FileHash
-		if entryHash == "" {
-			entryHash = entry.Hash
-		}
-		if entryHash == fileHash {
-			if trustedAuthor, isTrusted := trustedKeys[strings.ToLower(entry.PublicKey)]; isTrusted {
-				pubBytes, err1 := hex.DecodeString(entry.PublicKey)
-				sigBytes, err2 := hex.DecodeString(entry.Signature)
-				if err1 == nil && err2 == nil && len(pubBytes) == ed25519.PublicKeySize {
-					if ed25519.Verify(pubBytes, content, sigBytes) || ed25519.Verify(pubBytes, []byte(fileHash), sigBytes) || ed25519.Verify(pubBytes, hashBytes[:], sigBytes) {
-						isVerified = true
-						authorName = trustedAuthor
-						verifyErr = ""
-						verificationState = "verified"
-					} else {
-						verifyErr = "Invalid Signature: Cryptographic verification failed"
-						verificationState = "invalid_sig"
-					}
-				} else {
-					verifyErr = "Malformed Signature or Public Key data"
-					verificationState = "malformed"
-				}
-			} else {
-				verifyErr = "Untrusted Key: The public key is not mapped in contributors.json"
-				verificationState = "untrusted"
-			}
+	signerKey := v.SignerKey
+	signerName := v.SignerName
+	verifyErr := v.Err
+	verificationState := v.State
+	if v.State == "signed" {
+		// A valid signature; trust depends on whether the key is in the keyring.
+		if recognized[strings.ToLower(v.SignerKey)] {
+			isVerified = true
+			verifyErr = ""
+			verificationState = "verified"
 		} else {
-			verifyErr = "Hash Mismatch: File content was modified after signing"
-			verificationState = "tampered"
+			verifyErr = "Signed by an unrecognized contributor key"
+			verificationState = "unverified"
 		}
 	}
 
 	title := parts[len(parts)-1]
 	title = strings.ReplaceAll(title, "-", " ")
-	title = strings.Title(title)
+	title = toTitle(title)
 
 	art := &models.Article{
 		Path:              "/" + filepath.ToSlash(cleanPath),
@@ -346,9 +526,12 @@ func (s *Store) processArticle(p string, trustedKeys map[string]string, allSigna
 		Raw:               string(content),
 		Hash:              fileHash,
 		Verified:          isVerified,
-		Author:            authorName,
+		SignerKey:         signerKey,
+		SignerName:        signerName,
 		VerificationError: verifyErr,
 		VerificationState: verificationState,
+		SignedAt:          fetch.FrontmatterValue(content, "red_signed_at"),
+		Tags:              fetch.FrontmatterTags(content),
 	}
 
 	return art, parts, nil
@@ -371,6 +554,7 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 				items = append(items, SearchItem{
 					Title: "📄 " + art.Title,
 					Path:  art.Path,
+					Tags:  art.Tags,
 				})
 			}
 			return
@@ -379,7 +563,7 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 		currentPath := parentPath + "/" + sec.Name
 
 		title := strings.ReplaceAll(sec.Name, "-", " ")
-		title = strings.Title(title)
+		title = toTitle(title)
 		items = append(items, SearchItem{
 			Title: "📁 " + title,
 			Path:  currentPath,
@@ -389,6 +573,7 @@ func (s *Store) BuildSearchIndex() []SearchItem {
 			items = append(items, SearchItem{
 				Title: "📄 " + art.Title,
 				Path:  art.Path,
+				Tags:  art.Tags,
 			})
 		}
 

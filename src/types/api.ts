@@ -13,6 +13,7 @@ export interface NavNode {
   description?: string
   description_source?: string
   is_leaf: boolean
+  is_guide?: boolean
   child_count?: number
   guide_count?: number
   content_type?: string
@@ -24,12 +25,15 @@ export interface Crumb {
   path: string
 }
 
+// The four states the Go backend actually emits (store.processArticle):
+//   verified   — valid signature by a key in this node's contributor keyring
+//   unverified — valid signature, but the signer key is not (yet) recognized
+//   tampered   — signature/body-hash mismatch
+//   unsigned   — no signature in the note frontmatter
 export type VerificationState =
   | 'verified'
+  | 'unverified'
   | 'tampered'
-  | 'invalid_sig'
-  | 'untrusted'
-  | 'malformed'
   | 'unsigned'
 
 export interface ArticleRef {
@@ -41,18 +45,23 @@ export interface Article {
   title: string
   body_html: string
   verification_state: VerificationState
+  verification_error?: string
+  signer_key?: string
   author: string
+  signed_at?: string // human-readable signature date (red_signed_at)
   hash: string
   crumb: Crumb[]
   prev_article: ArticleRef | null
   next_article: ArticleRef | null
   is_directory: boolean
+  tags?: string[]
 }
 
 export interface RecentFile {
   title: string
   path: string
-  author: string
+  author?: string
+  signer_key?: string
   verification_state: VerificationState
 }
 
@@ -102,6 +111,22 @@ export interface Contributor {
   public_key: string
 }
 
+// A signer key observed in this node's content. `name` is self-asserted (from the
+// note's red_author_name frontmatter) and is only a convenience label; `trusted`
+// reflects whether the key is already in the contributor keyring.
+export interface DetectedSigner {
+  public_key: string
+  name: string
+  note_count: number
+  trusted: boolean
+  sample_path: string
+  // The signer's most recently authored note (by file mtime), so a maintainer can
+  // judge an unverified signer from their latest work. Empty when none could be read.
+  recent_path: string
+  recent_title: string
+  recent_signed_at: string
+}
+
 export interface StartupSync {
   id: number
   url: string
@@ -113,8 +138,23 @@ export interface StartupSync {
   added_at: string
 }
 
-// GET /-/search-index.json returns store.SearchItem[] — title + path only.
+// GET /-/search-index.json returns store.SearchItem[] — title + path + tags.
+// (Admin-only; used only for admin tooling now.)
 export interface SearchEntry {
   title: string
   path: string
+  tags?: string[]
+}
+
+// GET /api/search?q= returns navigation.SearchResult[] — FTS5 results with snippet.
+export interface FtsResult {
+  file_path: string
+  title: string
+  snippet: string
+}
+
+// GET /api/tags returns navigation.TagCount[] — a tag and how many notes carry it.
+export interface TagCount {
+  name: string
+  count: number
 }

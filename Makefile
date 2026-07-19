@@ -1,33 +1,34 @@
-# =============================================================
-#  red-engine — dev tooling (Project R.E.D)
-# =============================================================
 
-.PHONY: dev air vite build run tidy clean
+.PHONY: dev air vite build build-frontend build-backend run tidy clean demo test
 
-## dev: run Vite (CSS/JS HMR on :5173) + Air (Go hot reload on :8080)
-##      Open http://localhost:5173 in your browser.
 dev:
 	@./red-dev.sh
 
-## air: hot-reload the Go server only (no Vite, no CSS HMR)
 air:
 	DEV_MODE=true air -c .air.dev.toml
 
-## vite: start Vite dev server only (requires Go already running on :8080)
 vite:
-	npx vite
+	cd internal/router/red-engine-frontend && npx vite
 
-## build: production build — compile CSS/JS via Vite, then the Go binary
-build:
-	npx vite build
-	go build -o ./red ./cmd/red
+build-frontend:
+	cd internal/router/red-engine-frontend && npm install && npm run build
 
-## run: build + run once (no watching)
+build-backend:
+	go build -ldflags "-X github.com/RED-Collective/red-engine/internal/router.Version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o ./red ./cmd/red
+
+build: build-frontend build-backend
+
 run: build
 	./red
+
+demo:
+	@./scripts/two-node.sh
+
+test:
+	go test ./... -race -cover
 
 tidy:
 	go mod tidy
 
 clean:
-	rm -rf tmp internal/router/static/dist
+	rm -rf tmp internal/router/static/dist FRONTEND_BUILD

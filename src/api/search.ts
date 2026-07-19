@@ -1,7 +1,7 @@
-import type { SearchEntry } from '../types/api'
+import type { FtsResult } from '../types/api'
 import { getJSON } from './http'
 
-// GET /-/search-index.json → flat [{title, path}] index built from all articles.
-export function fetchSearchIndex(): Promise<SearchEntry[]> {
-  return getJSON<SearchEntry[]>('/-/search-index.json')
+// GET /api/search?q= → FTS5 server-side search, returns up to 20 results.
+export function searchFts(q: string): Promise<FtsResult[]> {
+  return getJSON<FtsResult[]>(`/api/search?q=${encodeURIComponent(q)}`)
 }

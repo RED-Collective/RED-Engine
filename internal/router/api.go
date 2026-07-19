@@ -45,6 +45,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 	type candidate struct {
 		title             string
 		path              string
+		signerKey         string
 		author            string
 		verificationState string
 		mtime             time.Time
@@ -87,7 +88,8 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 			items = append(items, candidate{
 				title:             title,
 				path:              displayPath,
-				author:            art.Author,
+				signerKey:         art.SignerKey,
+				author:            art.SignerName,
 				verificationState: art.VerificationState,
 				mtime:             mtime,
 			})
@@ -111,7 +113,8 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 	type result struct {
 		Title             string `json:"title"`
 		Path              string `json:"path"`
-		Author            string `json:"author"`
+		SignerKey         string `json:"signer_key,omitempty"`
+		Author            string `json:"author,omitempty"`
 		VerificationState string `json:"verification_state"`
 	}
 
@@ -120,6 +123,7 @@ func (h *handler) recentFiles(w http.ResponseWriter, r *http.Request) {
 		out = append(out, result{
 			Title:             it.title,
 			Path:              it.path,
+			SignerKey:         it.signerKey,
 			Author:            it.author,
 			VerificationState: it.verificationState,
 		})

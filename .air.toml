@@ -1,47 +1,68 @@
-# =============================================================
-#  Air config — red-engine (Project R.E.D)
-#  Hot-reloads the Go server AND rebuilds Tailwind on changes.
-#
-#  Matches your repo layout:
-#    cmd/red/main.go                       — entrypoint
-#    internal/router/static/tailwind-input.css  — Tailwind entry
-#    internal/router/static/tailwind.css        — build output (served)
-#    internal/router/templates/*.html           — Go templates
-#
-#  Two ways to run (see Makefile / dev.sh):
-#   1) `make dev`  — `npx tailwindcss --watch` + `air` together
-#                    (instant CSS rebuilds, recommended)
-#   2) `air`       — single process; the pre_cmd below rebuilds
-#                    Tailwind before each Go build (simpler, slower CSS)
-# =============================================================
+#:schema https://json.schemastore.org/any.json
+
+env_files = []
 root = "."
+testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  # Rebuild the CSS, then compile the server.
-  pre_cmd = ["npx tailwindcss -i ./internal/router/static/tailwind-input.css -o ./internal/router/static/tailwind.css --minify"]
-  cmd = "go build -o ./tmp/red ./cmd/red"
-  bin = "./tmp/red"
-  full_bin = "APP_ENV=dev ./tmp/red"
-
-  # Watch Go, templates, the CSS source, and content Markdown (data/**).
-  include_ext = ["go", "html", "css", "md", "json"]
-  # Don't loop on generated output, vendored assets, or the content DB.
-  exclude_dir = ["tmp", "vendor", "node_modules", "data"]
-  exclude_regex = ["_test\\.go", "tailwind\\.css", "registry\\.db"]
-  delay = 200            # ms — debounce rapid saves
-  stop_on_error = true
+  args_bin = []
+  bin = "./tmp/main"
+  cmd = "go build -o ./tmp/main ./cmd/red"
+  delay = 1000
+  entrypoint = ["./tmp/main"]
+  exclude_dir = ["assets", "tmp", "vendor", "testdata"]
+  exclude_file = []
+  exclude_regex = ["_test.go"]
+  exclude_unchanged = false
+  follow_symlink = false
+  full_bin = ""
+  ignore_dangerous_root_dir = false
+  include_dir = ["internal"]
+  include_ext = ["go", "tpl", "tmpl", "html"]
+  include_file = []
+  kill_delay = "0s"
+  log = "build-errors.log"
+  poll = false
+  poll_interval = 0
+  post_cmd = []
+  pre_cmd = []
+  rerun = false
+  rerun_delay = 500
   send_interrupt = false
-  kill_delay = "500ms"
+  stop_on_error = false
 
-[log]
-  time = true
+  [build.windows]
+    args_bin = []
+    bin = "tmp\\main.exe"
+    cmd = "go build -o ./tmp/main.exe ./cmd/red"
+    entrypoint = ["tmp\\main.exe"]
+    full_bin = ""
+    post_cmd = []
+    pre_cmd = []
 
 [color]
-  main = "magenta"
-  watcher = "cyan"
+  app = ""
   build = "yellow"
+  main = "magenta"
+  mode = ""
   runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  silent = false
+  time = false
 
 [misc]
-  clean_on_exit = true
+  clean_on_exit = false
+
+[proxy]
+  app_port = 0
+  app_start_timeout = 0
+  enabled = false
+  proxy_port = 0
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true

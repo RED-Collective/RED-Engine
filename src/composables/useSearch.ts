@@ -1,44 +1,31 @@
-import { ref, computed } from 'vue'
-import type { SearchEntry } from '../types/api'
-import { fetchSearchIndex } from '../api/search'
-
-// Lazy-loaded full-text-ish search over the title/path index. The index is
-// loaded once on first use and cached at module scope.
-const index = ref<SearchEntry[]>([])
-let loaded = false
-let loadingPromise: Promise<void> | null = null
-
-async function ensureIndex(): Promise<void> {
-  if (loaded) return
-  if (!loadingPromise) {
-    loadingPromise = fetchSearchIndex()
-      .then((entries) => {
-        index.value = entries
-        loaded = true
-      })
-      .catch(() => {
-        index.value = []
-      })
-      .finally(() => {
-        loadingPromise = null
-      })
-  }
-  return loadingPromise
-}
+import { ref, watch } from 'vue'
+import type { FtsResult } from '../types/api'
+import { searchFts } from '../api/search'
 
 export function useSearch() {
   const query = ref('')
+  const results = ref<FtsResult[]>([])
+  let debounce: ReturnType<typeof setTimeout> | null = null
 
-  const results = computed<SearchEntry[]>(() => {
-    const q = query.value.trim().toLowerCase()
-    if (!q) return []
-    return index.value
-      .filter(
-        (e) =>
-          e.title.toLowerCase().includes(q) || e.path.toLowerCase().includes(q),
-      )
-      .slice(0, 20)
+  watch(query, (q) => {
+    if (debounce) clearTimeout(debounce)
+    if (!q.trim()) {
+      results.value = []
+      return
+    }
+    debounce = setTimeout(async () => {
+      try {
+        results.value = await searchFts(q.trim())
+      } catch {
+        results.value = []
+      }
+    }, 200)
   })
 
-  return { index, query, results, ensureIndex }
+  // No-op: FTS is server-side, nothing to pre-load.
+  function ensureIndex() {
+    return Promise.resolve()
+  }
+
+  return { query, results, ensureIndex }
 }

@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 )
 
 // RemoteSync is kept for one-time migration from config.json to the database.
@@ -15,6 +16,11 @@ type Config struct {
 	// Bootstrap — needed before the database is open.
 	Addr    string `json:"addr"`
 	DataDir string `json:"dataDir"`
+
+	// StateDir holds private node state (registry.db, identity keys). It must
+	// live OUTSIDE DataDir, which is served and synced as public content.
+	// Empty means the default ~/.red-engine (see ResolvedStateDir).
+	StateDir string `json:"stateDir"`
 
 	// Security credentials — must stay outside the database they protect.
 	AdminToken    string `json:"adminToken"`
@@ -37,6 +43,25 @@ type Config struct {
 	StartupSync         []RemoteSync `json:"startupSync"`
 	TemplateSwitchDepth int          `json:"templateSwitchDepth"` // default 2
 
+	// Frontend hosting — the engine is frontend-agnostic and exposes a JSON API
+	// (see GET /api). A compiled UI is served as plain static files; it can be a
+	// single-page app (React/Tailwind, etc.) OR a multi-page static build.
+	//
+	// WebDir, if set, is a filesystem directory holding the built frontend
+	// (index.html + assets). When present it is served at / and takes priority
+	// over the binary's embedded UI, so a new build can be dropped in without
+	// recompiling. Real files are served as-is; an extension-less path that
+	// matches no file falls back to index.html (SPA client-side routing), while a
+	// missing file WITH an extension returns 404 — so non-SPA builds work too.
+	// Env: RED_WEB_DIR.
+	WebDir string `json:"webDir"`
+
+	// CORSOrigins is a comma-separated allow-list of browser origins permitted to
+	// call the API cross-origin (e.g. a separate frontend dev server on another
+	// port). "*" allows any origin. Empty disables CORS (same-origin only).
+	// Auth uses the X-Admin-Token header, not cookies, so "*" is safe here.
+	// Env: RED_CORS_ORIGINS.
+	CORSOrigins string `json:"corsOrigins"`
 }
 
 func Default() Config {
@@ -45,6 +70,21 @@ func Default() Config {
 		DataDir:             "./data",
 		TemplateSwitchDepth: 2,
 	}
+}
+
+// ResolvedStateDir returns the directory for private node state (registry.db,
+// identity keys). It must stay outside DataDir, which is served as public
+// content. Defaults to ~/.red-engine, matching the node identity key location
+// in internal/node/identity.go.
+func (c *Config) ResolvedStateDir() string {
+	if c.StateDir != "" {
+		return c.StateDir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".red-engine"
+	}
+	return filepath.Join(home, ".red-engine")
 }
 
 func Load(path string) (Config, error) {

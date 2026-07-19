@@ -29,6 +29,7 @@ fi
 if [ "$(id -u)" = "0" ]; then
     # Running as root (standard Docker): fix permissions, then drop to reduser.
     chown -R reduser:redgroup /app/data
+    [ -d "/app/state" ] && chown -R reduser:redgroup /app/state
     [ -f "/app/config.json" ] && chown reduser:redgroup /app/config.json
     exec su-exec reduser "$@"
 else

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,7 +16,7 @@ import (
 
 // registrySchemaVersion is the current schema generation. It is stored in
 // node_settings under "registry_schema_version" and gates breaking migrations.
-const registrySchemaVersion = 2
+const registrySchemaVersion = 6
 
 var (
 	db   *sql.DB
@@ -47,10 +48,16 @@ type Peer struct {
 }
 
 type StartupSync struct {
-	ID           int        `json:"id"`
-	URL          string     `json:"url"`
-	Filename     string     `json:"filename"`
-	SyncType     string     `json:"sync_type"`
+	ID       int    `json:"id"`
+	URL      string `json:"url"`
+	Filename string `json:"filename"`
+	SyncType string `json:"sync_type"`
+	// PeerKey and RemotePath are set only for sync_type='peer' entries. PeerKey
+	// is the source peer's node public key — the stable anchor used to look up the
+	// peer's CURRENT url at sync time, so a peer that moved (e.g. a new cloudflared
+	// tunnel) is still re-pulled. RemotePath is the content subtree to pull.
+	PeerKey      string     `json:"peer_key,omitempty"`
+	RemotePath   string     `json:"remote_path,omitempty"`
 	LastSyncedAt *time.Time `json:"last_synced_at,omitempty"`
 	LastError    string     `json:"last_error"`
 	SyncStatus   string     `json:"sync_status"`
@@ -62,10 +69,20 @@ func InitRegistry(dataDir string) error {
 	var initErr error
 	once.Do(func() {
 		dbPath := filepath.Join(dataDir, "registry.db")
-		db, initErr = sql.Open("sqlite", dbPath)
+		// A busy timeout makes a blocked writer wait-and-retry instead of failing
+		// immediately with SQLITE_BUSY, and capping the pool at one connection
+		// serializes all access through Go so concurrent federation writes can never
+		// collide on the file: an explicit peer add races the reciprocal
+		// /-/announce/downstream it triggers, and the announce + peer-sync timers
+		// write on their own schedule. SQLite is single-writer anyway, so a
+		// one-connection pool costs nothing here while removing the SQLITE_BUSY/
+		// CANTOPEN races seen on the directory node during the 3-node live test.
+		dsn := dbPath + "?_pragma=busy_timeout(5000)"
+		db, initErr = sql.Open("sqlite", dsn)
 		if initErr != nil {
 			return
 		}
+		db.SetMaxOpenConns(1)
 		initErr = migrate(db)
 	})
 	return initErr
@@ -86,23 +103,6 @@ func migrate(db *sql.DB) error {
 	}
 
 	ver := schemaVersionValue(db)
-
-	// trusted_authors is unchanged across versions.
-	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS trusted_authors (
-			public_key    TEXT PRIMARY KEY,
-			name          TEXT NOT NULL,
-			imported_from TEXT,
-			imported_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-			revoked       BOOLEAN DEFAULT 0,
-			revoked_at    DATETIME,
-			signature     TEXT
-		);
-		CREATE INDEX IF NOT EXISTS idx_trusted_authors_name          ON trusted_authors(name);
-		CREATE INDEX IF NOT EXISTS idx_trusted_authors_imported_from ON trusted_authors(imported_from);
-	`); err != nil {
-		return err
-	}
 
 	// peers — fresh databases get the v2 schema directly; legacy ones are recreated.
 	var capturedPaths map[int64][]string
@@ -129,9 +129,63 @@ func migrate(db *sql.DB) error {
 		}
 	}
 
+	// v6: peer syncs are now anchored to the source peer's identity (peer_key)
+	// plus the content subtree (remote_path), so periodic re-pull follows the peer
+	// to its current url after a tunnel restart. Add the columns to legacy tables
+	// (fresh ones already have them from createStartupSyncTable). Idempotent.
+	if err := ensureColumn(db, "startup_sync", "peer_key", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := ensureColumn(db, "startup_sync", "remote_path", "TEXT DEFAULT ''"); err != nil {
+		return err
+	}
+
 	// Auxiliary tables introduced in v2 (safe to create any time).
 	if err := createAuxTables(db); err != nil {
 		return err
+	}
+
+	// Drop the removed branch/taxonomy layer. IF EXISTS makes this a no-op on a
+	// fresh database; on an upgrade it deletes the old taxonomy and manual-tag
+	// tables for good.
+	if _, err := db.Exec(`
+		DROP TABLE IF EXISTS taxonomy;
+		DROP TABLE IF EXISTS manual_tags;
+	`); err != nil {
+		return fmt.Errorf("drop branch tables: %w", err)
+	}
+
+	// Contributor keyring — the admin-recognized signer keys that make a valid
+	// signature read as "verified" rather than "unverified". Create it, migrate any
+	// rows from the legacy trusted_authors table (no author identity, just the
+	// pubkey + label), then drop that table.
+	if err := createContributorsTable(db); err != nil {
+		return err
+	}
+	if tableExists(db, "trusted_authors") {
+		if _, err := db.Exec(`
+			INSERT OR IGNORE INTO contributors (public_key, name, revoked)
+			SELECT public_key, COALESCE(name,''), COALESCE(revoked,0) FROM trusted_authors`); err != nil {
+			return fmt.Errorf("migrate trusted_authors: %w", err)
+		}
+		if _, err := db.Exec(`DROP TABLE trusted_authors`); err != nil {
+			return fmt.Errorf("drop trusted_authors: %w", err)
+		}
+	}
+
+	// v5: drop the abandoned full-text-search / content-index / tags layer — the
+	// remnants of the superseded taxonomy+FTS architecture. Search now runs off
+	// the in-memory store.BuildSearchIndex, so none of these tables are ever read
+	// or written. IF EXISTS makes this a no-op on a fresh database; on an upgrade
+	// it removes the dead tables for good. nav_folder_tags is dropped before
+	// content_tags to respect the foreign key.
+	if _, err := db.Exec(`
+		DROP TABLE IF EXISTS content_fts;
+		DROP TABLE IF EXISTS content_index;
+		DROP TABLE IF EXISTS nav_folder_tags;
+		DROP TABLE IF EXISTS content_tags;
+	`); err != nil {
+		return fmt.Errorf("drop legacy content/fts/tags tables: %w", err)
 	}
 
 	// Backfill the exported-paths junction from captured legacy JSON now that
@@ -189,6 +243,8 @@ func createStartupSyncTable(e execer) error {
 			filename       TEXT     UNIQUE NOT NULL,
 			sync_type      TEXT     DEFAULT 'auto'
 			                        CHECK(sync_type IN ('auto','git','tar.gz','zip','raw','peer')),
+			peer_key       TEXT     DEFAULT '',
+			remote_path    TEXT     DEFAULT '',
 			last_synced_at DATETIME,
 			last_error     TEXT     DEFAULT '',
 			sync_status    TEXT     DEFAULT 'pending'
@@ -196,6 +252,48 @@ func createStartupSyncTable(e execer) error {
 			added_at       DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`)
 	return err
+}
+
+// createContributorsTable creates the contributor keyring: the set of signer
+// public keys an admin recognizes on this node. There is no author identity —
+// `name` is just an admin-facing label, never shown on the public verification
+// badge. A non-revoked key here is what turns a valid signature "verified".
+func createContributorsTable(e execer) error {
+	_, err := e.Exec(`
+		CREATE TABLE IF NOT EXISTS contributors (
+			public_key TEXT     PRIMARY KEY,
+			name       TEXT     NOT NULL DEFAULT '',
+			added_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+			revoked    INTEGER  NOT NULL DEFAULT 0,
+			revoked_at DATETIME
+		);
+		CREATE INDEX IF NOT EXISTS idx_contributors_revoked ON contributors(revoked);
+	`)
+	return err
+}
+
+// RecognizedContributorKeys returns the set of non-revoked contributor public
+// keys (lowercased hex) this node recognizes. A cryptographically valid signature
+// reads as "verified" only when its signer key is in this set; otherwise it is
+// "unverified" (intact, but not vouched for by this node).
+func RecognizedContributorKeys() map[string]bool {
+	out := make(map[string]bool)
+	db := GetDB()
+	if db == nil {
+		return out
+	}
+	rows, err := db.Query(`SELECT public_key FROM contributors WHERE revoked = 0`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil && k != "" {
+			out[strings.ToLower(k)] = true
+		}
+	}
+	return out
 }
 
 func createAuxTables(e execer) error {
@@ -216,16 +314,6 @@ func createAuxTables(e execer) error {
 			latency_ms INTEGER
 		);
 		CREATE INDEX IF NOT EXISTS idx_health_history_peer ON peer_health_history(peer_id, checked_at DESC);
-
-		CREATE TABLE IF NOT EXISTS content_tags (
-			id   INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT    NOT NULL UNIQUE
-		);
-		CREATE TABLE IF NOT EXISTS nav_folder_tags (
-			folder_id INTEGER NOT NULL,
-			tag_id    INTEGER NOT NULL REFERENCES content_tags(id) ON DELETE CASCADE,
-			PRIMARY KEY (folder_id, tag_id)
-		);
 	`)
 	return err
 }
@@ -649,6 +737,18 @@ func SetPeerHealth(peerID int, online bool, latencyMs int) error {
 		peerID, online, latencyMs); err != nil {
 		return err
 	}
+	// Keep only the 100 most recent rows per peer to prevent unbounded growth
+	// (~525,600 rows/year for 10 peers at 1-min intervals without this guard).
+	if _, err := tx.Exec(`
+		DELETE FROM peer_health_history
+		WHERE peer_id = ? AND id NOT IN (
+			SELECT id FROM peer_health_history
+			WHERE peer_id = ?
+			ORDER BY checked_at DESC
+			LIMIT 100
+		)`, peerID, peerID); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -680,6 +780,47 @@ func DeletePeer(url string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// PruneDeadPeers removes peers that have been continuously offline for more than
+// offlineDays days. Peers that have never been health-checked are not pruned.
+// Child rows (exported paths, health history) are cascaded in the same
+// transaction so a later peer that reuses a freed SQLite rowid can never inherit
+// a pruned peer's exported paths or health samples.
+func PruneDeadPeers(offlineDays int) (int, error) {
+	if db == nil {
+		return 0, errNotInit
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	const deadFilter = `
+		FROM peers
+		WHERE is_online = 0
+		  AND online_checked_at IS NOT NULL
+		  AND online_checked_at < datetime('now', ?)`
+	cutoff := fmt.Sprintf("-%d days", offlineDays)
+
+	for _, child := range []string{
+		`DELETE FROM peer_exported_paths WHERE peer_id IN (SELECT id ` + deadFilter + `)`,
+		`DELETE FROM peer_health_history WHERE peer_id IN (SELECT id ` + deadFilter + `)`,
+	} {
+		if _, err := tx.Exec(child, cutoff); err != nil {
+			return 0, err
+		}
+	}
+	res, err := tx.Exec(`DELETE `+deadFilter, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
 }
 
 // ListAllExportedPaths returns the distinct set of content paths advertised across
@@ -715,7 +856,8 @@ func ListStartupSync() ([]StartupSync, error) {
 		return nil, errNotInit
 	}
 	rows, err := db.Query(`
-		SELECT id, url, filename, COALESCE(sync_type,'auto'), last_synced_at,
+		SELECT id, url, filename, COALESCE(sync_type,'auto'),
+		       COALESCE(peer_key,''), COALESCE(remote_path,''), last_synced_at,
 		       COALESCE(last_error,''), COALESCE(sync_status,'pending'), added_at
 		FROM startup_sync ORDER BY added_at ASC`)
 	if err != nil {
@@ -726,7 +868,8 @@ func ListStartupSync() ([]StartupSync, error) {
 	for rows.Next() {
 		var s StartupSync
 		var lastSynced, addedAt sql.NullTime
-		if err := rows.Scan(&s.ID, &s.URL, &s.Filename, &s.SyncType, &lastSynced,
+		if err := rows.Scan(&s.ID, &s.URL, &s.Filename, &s.SyncType,
+			&s.PeerKey, &s.RemotePath, &lastSynced,
 			&s.LastError, &s.SyncStatus, &addedAt); err != nil {
 			return nil, err
 		}
@@ -755,6 +898,28 @@ func AddStartupSync(url, filename string) error {
 			url       = excluded.url,
 			sync_type = excluded.sync_type
 	`, url, filename, detectSyncType(url))
+	return err
+}
+
+// AddPeerStartupSync records (or updates) a peer-based startup sync. Unlike a
+// URL sync, it is anchored to the source peer's identity (peerKey) plus the
+// content subtree (remotePath); the periodic peer-sync loop resolves the peer's
+// CURRENT url from that key at pull time, so the content keeps syncing after the
+// peer moves to a new (e.g. cloudflared quick) tunnel URL. peerURL is stored only
+// as a human-readable hint of where the peer was last seen.
+func AddPeerStartupSync(peerKey, peerURL, remotePath, filename string) error {
+	if db == nil {
+		return errNotInit
+	}
+	_, err := db.Exec(`
+		INSERT INTO startup_sync (url, filename, sync_type, peer_key, remote_path)
+		VALUES (?, ?, 'peer', ?, ?)
+		ON CONFLICT(filename) DO UPDATE SET
+			url         = excluded.url,
+			sync_type   = 'peer',
+			peer_key    = excluded.peer_key,
+			remote_path = excluded.remote_path
+	`, peerURL, filename, peerKey, remotePath)
 	return err
 }
 
@@ -787,6 +952,33 @@ func tableExists(db *sql.DB, name string) bool {
 	var found string
 	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&found)
 	return err == nil
+}
+
+// columnExists reports whether table has a column called col.
+func columnExists(db *sql.DB, table, col string) bool {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if rows.Scan(&name) == nil && name == col {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureColumn adds col (with the given type/default DDL) to table if missing.
+// SQLite's ALTER TABLE ADD COLUMN is the idempotent way to evolve a table in
+// place without recreating it; guarding on columnExists keeps it re-runnable.
+func ensureColumn(db *sql.DB, table, col, ddl string) error {
+	if columnExists(db, table, col) {
+		return nil
+	}
+	_, err := db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + col + ` ` + ddl)
+	return err
 }
 
 func schemaVersionValue(db *sql.DB) int {

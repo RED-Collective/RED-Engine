@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/RED-Collective/red-engine/internal/config"
 	"github.com/RED-Collective/red-engine/internal/models"
@@ -33,6 +34,9 @@ type handler struct {
 	cfg         *config.Config
 	navService  *navigation.Service
 	devMode     bool
+	// webFS is the active compiled-frontend source served at /, or nil to fall
+	// back to the legacy Go templates. See frontend.go.
+	webFS http.FileSystem
 }
 
 var tmplFuncs = template.FuncMap{
@@ -104,55 +108,112 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 		devMode:     devMode,
 	}
 
-	// Initialise navigation service if registry DB is available.
-	if db := registry.GetDB(); db != nil {
-		if err := navigation.InitNavSchema(db); err != nil {
-			log.Printf("[Navigation] Schema init failed: %v", err)
-		} else {
-			h.navService = navigation.NewService(db, s.DataDir())
+	// Navigation service gets its own dedicated SQLite DB (nav.db) with WAL mode
+	// and an unlimited connection pool. The alternative — sharing the registry's
+	// single-connection pool — causes ScanDataDirectories (which holds a write
+	// transaction for a full filesystem walk) to starve every concurrent
+	// /api/navigation and /api/tags read, making the UI appear permanently stuck
+	// at "Loading..." after the first content sync.
+	stateDir := cfg.ResolvedStateDir()
+	if navDB, err := navigation.OpenNavDB(filepath.Join(stateDir, "nav.db")); err != nil {
+		log.Printf("[Navigation] Failed to open nav DB: %v", err)
+	} else if err := navigation.InitNavSchema(navDB); err != nil {
+		log.Printf("[Navigation] Schema init failed: %v", err)
+	} else {
+		h.navService = navigation.NewService(navDB, s.DataDir())
+		go func() {
+			if _, err := h.navService.ScanDataDirectories(); err != nil {
+				log.Printf("[Navigation] Initial scan failed: %v", err)
+			}
+		}()
+		// The reindex hook fires after every content change (Reload, UpdateFiles).
+		// Running it async prevents a long filesystem scan from blocking Reload's
+		// caller. The single-flight guard (scanning atomic) drops a new trigger when
+		// a scan is already in progress — the running scan will capture the latest
+		// state because it reads the filesystem directly.
+		navSvc := h.navService
+		var scanning atomic.Bool
+		s.SetReindexHook(func() {
+			if !scanning.CompareAndSwap(false, true) {
+				return
+			}
 			go func() {
-				if _, err := h.navService.ScanDataDirectories(); err != nil {
-					log.Printf("[Navigation] Initial scan failed: %v", err)
+				defer scanning.Store(false)
+				if _, err := navSvc.ScanDataDirectories(); err != nil {
+					log.Printf("[Navigation] Reindex after content change failed: %v", err)
 				}
 			}()
+		})
+	}
+
+	// Peer sync loop requires the registry DB.
+	if registry.GetDB() != nil {
+		// Periodically re-pull subscribed peer content from each source's live
+		// address (resolved by identity), so federated content keeps syncing after
+		// a peer changes its tunnel URL.
+		h.startPeerSyncLoop()
+	}
+
+	// Resolve the active compiled-frontend source, in priority order:
+	//   1. RED_WEB_DIR on the filesystem (drop in any build, no recompile);
+	//   2. the binary's embedded static/dist;
+	//   3. none — the legacy Go templates render instead.
+	// The chosen source must contain an index.html to count as present.
+	if cfg.WebDir != "" {
+		if _, err := os.Stat(filepath.Join(cfg.WebDir, "index.html")); err == nil {
+			h.webFS = http.Dir(cfg.WebDir)
+			log.Printf("[Frontend] Serving UI from RED_WEB_DIR=%s", cfg.WebDir)
+		} else {
+			log.Printf("[Frontend] RED_WEB_DIR=%s has no index.html; ignoring", cfg.WebDir)
+		}
+	}
+	if h.webFS == nil {
+		if distFS, err := fs.Sub(files, "static/dist"); err == nil {
+			if _, err := fs.Stat(distFS, "index.html"); err == nil {
+				h.webFS = http.FS(distFS)
+			}
 		}
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(staticFS)))
 
-	// Serve Vite-built SPA assets (index.html references /assets/... at root level)
-	if distFS, err := fs.Sub(files, "static/dist"); err == nil {
-		mux.Handle("/assets/", http.FileServer(http.FS(distFS)))
+	// When a compiled frontend is active it owns every non-API path (including
+	// its own /assets, /static, etc.) via the catch-all. Only when there is no
+	// frontend do we expose the embedded /static/ assets the legacy templates use.
+	if h.webFS == nil {
+		mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(staticFS)))
 	}
 
-	mux.HandleFunc("/", h.spaIndex)
+	// Catch-all: serve the built UI (or legacy templates). Explicit client-side
+	// routes resolve to the app shell so deep links / refreshes work.
+	mux.HandleFunc("/", h.frontend)
 	mux.HandleFunc("/-/health", h.health)
 	mux.HandleFunc("/-/manifest", h.manifest)
-	mux.HandleFunc("/-/search-index.json", h.searchIndex)
+	mux.HandleFunc("/-/search-index.json", h.adminOnly(h.searchIndex))
 	mux.HandleFunc("/-/source/", h.source)
 	mux.HandleFunc("/-/download/", h.download)
 	mux.HandleFunc("/-/webhook/sync", h.webhookSync)
 	mux.HandleFunc("/-/nodeinfo", h.nodeInfo)
-	// /-/nodes is now a React SPA route; serve the shell so direct visits and
+	// /-/nodes is a client-side route; serve the app shell so direct visits and
 	// refreshes render client-side. The JSON it consumes lives at /-/peers and
 	// /-/nodeinfo (registered separately, untouched).
-	mux.HandleFunc("/-/nodes", h.spaIndex)
+	mux.HandleFunc("/-/nodes", h.appShell)
 	mux.HandleFunc("/-/peers", h.publicPeers)
 	mux.HandleFunc("/-/announce/challenge", h.announceChallenge)
 	mux.HandleFunc("/-/announce/confirm", h.announceConfirm)
+	mux.HandleFunc("/-/announce/downstream", h.announceDownstream)
+	mux.HandleFunc("/-/sync/verify", h.syncVerify)
+	mux.HandleFunc("/-/peer/resolve", h.peerResolve)
 	mux.HandleFunc("/-/branch-meta/", h.branchMeta)
 	mux.HandleFunc("/-/assets/", h.assetFile)
-	mux.Handle("/content/", http.StripPrefix("/content/", http.FileServer(http.Dir(h.store.DataDir()))))
+	contentFS := http.StripPrefix("/content/", http.FileServer(http.Dir(h.store.DataDir())))
+	mux.Handle("/content/", h.contentWithManifest(contentFS))
 
-	// /-/admin (exact path) is the React SPA route; subpaths below remain the
+	// /-/admin (exact path) is a client-side route; subpaths below remain the
 	// real admin JSON API. ServeMux matches /-/admin exactly, so /-/admin/* are
 	// unaffected.
-	mux.HandleFunc("/-/admin", h.spaIndex)
+	mux.HandleFunc("/-/admin", h.appShell)
 	mux.HandleFunc("/-/admin/peers/health", h.adminOnly(h.checkPeerHealthHandler))
-	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
-	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributorToDB))
-	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.revokeContributor))
 	mux.HandleFunc("/-/admin/peers", h.adminOnly(h.listPeers))
 	mux.HandleFunc("/-/admin/peers/refresh", h.adminOnly(h.refreshPeer))
 	mux.HandleFunc("/-/admin/peers/add", h.adminOnly(h.addPeer))
@@ -161,17 +222,36 @@ func New(s *store.Store, cfg *config.Config) http.Handler {
 	mux.HandleFunc("/-/import", h.adminOnly(h.importRemote))
 	mux.HandleFunc("/-/admin/config", h.adminOnly(h.adminConfig))
 	mux.HandleFunc("/-/admin/remove", h.adminOnly(h.adminRemove))
-	// Navigation API
+	// Contributor keyring: the recognized signer keys that make a valid signature
+	// read as "verified" rather than "unverified".
+	mux.HandleFunc("/-/admin/contributors", h.adminOnly(h.listContributors))
+	mux.HandleFunc("/-/admin/contributors/detected", h.adminOnly(h.detectedSigners))
+	mux.HandleFunc("/-/admin/contributors/add", h.adminOnly(h.addContributorToDB))
+	mux.HandleFunc("/-/admin/contributors/delete", h.adminOnly(h.revokeContributor))
+	// Data backups: zip snapshots of data/ so a bad sync can be rolled back by
+	// unzipping over the data directory. Creation is admin-only; the engine also
+	// takes one automatically on startup before any sync runs.
+	mux.HandleFunc("/-/admin/backup", h.adminOnly(h.backupCreate))
+	mux.HandleFunc("/-/admin/backups", h.adminOnly(h.backupList))
+	// JSON API consumed by the frontend. GET /api is a self-describing catalog.
+	mux.HandleFunc("/api", h.apiIndex)
 	mux.HandleFunc("/api/navigation", h.navAPI)
+	mux.HandleFunc("/api/tags", h.tagsAPI)
+	mux.HandleFunc("/api/search", h.searchAPI)
+	mux.HandleFunc("/api/backlinks", h.backlinksAPI)
+	mux.HandleFunc("/api/graph", h.graphAPI)
+	mux.HandleFunc("/api/nodes", h.nodesAPI)
+	mux.HandleFunc("/-/admin/links/broken", h.adminOnly(h.brokenLinksAPI))
 	mux.HandleFunc("/-/admin/navigation/rescan", h.adminOnly(h.navRescan))
 	mux.HandleFunc("/-/admin/navigation/folder/description", h.adminOnly(h.navFolderDescription))
 
-	// React SPA JSON APIs
 	mux.HandleFunc("/api/content", h.contentAPI)
 	mux.HandleFunc("/api/recent-files", h.recentFiles)
 	mux.HandleFunc("/-/admin/verify", h.adminOnly(h.adminVerify))
 
-	return mux
+	// CORS wrapping lets a frontend on another origin (e.g. a Vite dev server)
+	// call the API when RED_CORS_ORIGINS is set; otherwise it is a no-op.
+	return corsMiddleware(cfg.CORSOrigins, mux)
 }
 
 func (h *handler) adminOnly(next http.HandlerFunc) http.HandlerFunc {
@@ -241,28 +321,14 @@ func (h *handler) branchMeta(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, filePath)
 }
 
-// assetFile serves inline images embedded in markdown articles.
-// URL: /-/assets/{dirPath}/{filename}
-// Maps to: data/{dirPath}/.assets/{filename}
-// spaIndex serves the React SPA shell (static/dist/index.html) for all browser-navigation paths.
-// In dev mode with no built dist, it falls back to the legacy Go template renderer.
-func (h *handler) spaIndex(w http.ResponseWriter, r *http.Request) {
-	content, err := files.ReadFile("static/dist/index.html")
-	if err != nil {
-		// SPA not built yet — fall back to Go templates so the server is usable
-		// without running npm run build first (e.g. during backend-only development).
-		h.serve(w, r)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(content)
-}
-
 func (h *handler) adminVerify(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
+// assetFile serves inline images embedded in markdown articles.
+// URL: /-/assets/{dirPath}/{filename}
+// Maps to: data/{dirPath}/.assets/{filename}
 func (h *handler) assetFile(w http.ResponseWriter, r *http.Request) {
 	suffix := strings.TrimPrefix(r.URL.Path, "/-/assets/")
 	if strings.Contains(suffix, "..") {

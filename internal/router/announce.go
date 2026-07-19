@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -254,6 +255,104 @@ func AnnounceURLToPeer(peer registry.Peer, publicURL string) error {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		return fmt.Errorf("confirm rejected: HTTP %d", resp2.StatusCode)
+	}
+	return nil
+}
+
+type downstreamRegisterRequest struct {
+	URL string `json:"url"`
+}
+
+// announceDownstream handles POST /-/announce/downstream — a node that pulls from
+// us calls this so we learn it is one of our downstreams and will announce future
+// URL changes back to it. The body carries the caller's reachable URL; we fetch
+// its /-/nodeinfo to confirm it is a live RED node and to learn its identity
+// (the same trust model as a manual peer add). A peer we already know keeps its
+// existing relationship type — we only refresh its address; an unknown node is
+// recorded as 'downstream'. The only capability this grants is receiving our
+// already-public URL announcements, so the endpoint is safe to expose.
+func (h *handler) announceDownstream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req downstreamRegisterRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		http.Error(w, "url required", http.StatusBadRequest)
+		return
+	}
+
+	info, err := FetchNodeInfo(req.URL)
+	if err != nil {
+		http.Error(w, "failed to fetch nodeinfo: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if info.PublicKey == "" {
+		http.Error(w, "caller has no node identity", http.StatusBadRequest)
+		return
+	}
+	if info.PublicKey == node.GetNodePublicKey() {
+		http.Error(w, "refusing to register self", http.StatusBadRequest)
+		return
+	}
+
+	status := "registered"
+	peerType := "downstream"
+	if existing, _ := registry.GetPeerByPublicKey(info.PublicKey); existing != nil {
+		// Preserve whatever relationship the operator already chose; only refresh
+		// the address so future announcements reach the peer.
+		peerType = ""
+		status = "refreshed"
+	}
+
+	if err := registry.AddPeer(registry.Peer{
+		URL:           req.URL,
+		PublicKey:     info.PublicKey,
+		Name:          info.Name,
+		PeerType:      peerType,
+		Description:   info.Description,
+		PublicURL:     info.PublicURL,
+		TunnelType:    info.TunnelType,
+		ExportedPaths: info.ExportedPaths,
+		LastSeen:      time.Now(),
+		AddedAt:       time.Now(),
+	}); err != nil {
+		http.Error(w, "failed to save peer: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[Announce] downstream %q (%s…) %s", info.Name, shortKey(info.PublicKey), status)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": status})
+}
+
+// RegisterAsDownstream tells an upstream peer that this node pulls from it, so the
+// upstream learns to announce its URL changes back to us. It posts our public URL
+// to the upstream's /-/announce/downstream; the upstream authenticates us by
+// fetching our nodeinfo. Best-effort — callers log failures but never treat them
+// as fatal. A no-op when this node advertises no public URL (nothing to register).
+func RegisterAsDownstream(upstreamURL, selfPublicURL string) error {
+	if selfPublicURL == "" {
+		return fmt.Errorf("no public_url configured; cannot register as downstream")
+	}
+	base := strings.TrimSuffix(upstreamURL, "/")
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "https://" + base
+	}
+	body, _ := json.Marshal(downstreamRegisterRequest{URL: selfPublicURL})
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(base+"/-/announce/downstream", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("downstream registration to %s failed: %w", base, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("downstream registration rejected by %s: HTTP %d", base, resp.StatusCode)
 	}
 	return nil
 }
